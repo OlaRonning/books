@@ -30,9 +30,22 @@
       });
 
       # Builds run the test suite (pytestCheckHook).
-      checks = forAllSystems (pkgs: {
-        inherit (self.packages.${pkgs.stdenv.hostPlatform.system}) books books-ingest;
-      });
+      checks = forAllSystems (
+        pkgs:
+        let
+          inherit (self.packages.${pkgs.stdenv.hostPlatform.system}) books books-ingest;
+        in
+        {
+          inherit books books-ingest;
+          # The unconfigured package must not bake in a library or hub.
+          wrapper-defaults = pkgs.runCommand "books-wrapper-defaults" { } ''
+            if grep -E 'BOOKS_(DIR|HUB)' ${books}/bin/books; then
+              echo "default package sets BOOKS_DIR/BOOKS_HUB" >&2; exit 1
+            fi
+            touch $out
+          '';
+        }
+      );
 
       homeManagerModules.default = import ./nix/hm-module.nix;
 

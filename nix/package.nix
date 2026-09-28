@@ -9,8 +9,10 @@
   # Hub build: merge chapter folders, OCR, and ask Claude when ingesting.
   withIngest ? false,
   # Defaults baked into the wrapper; the environment still overrides them.
-  library ? null,
-  hub ? null,
+  # (Not named `library`/`hub`: callPackage would fill those from nixpkgs,
+  # which has a `hub` package.)
+  libraryDir ? null,
+  hubHost ? null,
 }:
 
 python3Packages.buildPythonApplication {
@@ -52,8 +54,8 @@ python3Packages.buildPythonApplication {
       )
     }"
   ]
-  ++ lib.optional (library != null) "--set-default BOOKS_DIR ${lib.escapeShellArg library}"
-  ++ lib.optional (hub != null) "--set-default BOOKS_HUB ${lib.escapeShellArg hub}";
+  ++ lib.optional (libraryDir != null) "--set-default BOOKS_DIR ${lib.escapeShellArg libraryDir}"
+  ++ lib.optional (hubHost != null) "--set-default BOOKS_HUB ${lib.escapeShellArg hubHost}";
 
   meta = {
     description = "Page-level full-text search and automatic cataloguing for a PDF library";

@@ -61,7 +61,8 @@ in
       {
         programs.books.package = pkgs.callPackage ./package.nix {
           withIngest = cfg.ingest.enable;
-          inherit (cfg) library hub;
+          libraryDir = cfg.library;
+          hubHost = cfg.hub;
         };
         home.packages = [ cfg.package ];
       }
