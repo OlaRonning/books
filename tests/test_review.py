@@ -48,12 +48,24 @@ def works():
     return catalog.load()
 
 
-def test_items_lists_all_three_kinds(lib):
-    kinds = {(k, n) for k, n, _ in review.items()}
+@pytest.mark.usefixtures("lib")
+def test_items_lists_all_three_kinds():
+    kinds = {(k, n) for k, n, _, _ in review.items()}
     assert kinds == {("review", "Briales - Cartan-Sync (2017).pdf"), ("dup", "svgd.pdf"),
                      ("failed", "broken.pdf")}
-    dup = next(d for k, _, d in review.items() if k == "dup")
-    assert "Liu & Wang - SVGD (2016).pdf" in dup and "same arxiv" in dup
+    dup_desc, dup_problem = next((d, p) for k, _, d, p in review.items() if k == "dup")
+    assert "Liu & Wang - SVGD (2016).pdf" in dup_desc and "same arxiv" in dup_problem
+    failed = next(p for k, _, _, p in review.items() if k == "failed")
+    assert "pdftotext failed" in failed
+    flagged = next(p for k, _, _, p in review.items() if k == "review")
+    assert flagged == review.NO_REASON  # `review = true`: an entry from before reasons
+
+
+def test_problem_and_missing_fields():
+    work = {"type": "article", "title": "T", "authors": ["A B"], "review": "no DOI found"}
+    assert review.problem(work) == "no DOI found"
+    assert review.missing(work) == ["year", "doi/arxiv/isbn", "venue"]
+    assert review.missing({"type": "book", "authors": ["A"], "year": 2000, "isbn": "1"}) == []
 
 
 def test_accept_clears_only_the_flag(lib):
@@ -111,7 +123,7 @@ def test_keep_existing_and_failed_actions(lib):
     review.retry("broken.pdf")
     assert not list((lib / "inbox" / "duplicates").iterdir())
     assert (lib / "inbox" / "broken.pdf").exists() and not (lib / "inbox" / "failed" / "broken.pdf.why").exists()
-    assert review.items() == [("review", "Briales - Cartan-Sync (2017).pdf", review.items()[0][2])]
+    assert [(k, n) for k, n, _, _ in review.items()] == [("review", "Briales - Cartan-Sync (2017).pdf")]
 
 
 def test_keep_marker_skips_duplicate_check(lib, monkeypatch):
@@ -119,12 +131,12 @@ def test_keep_marker_skips_duplicate_check(lib, monkeypatch):
     review.keep_both("svgd.pdf")
     work = {"type": "article", "authors": ["Qiang Liu"], "title": "SVGD", "year": 2016,
             "arxiv": "1608.04471", "tags": []}
-    monkeypatch.setattr(ingest, "settle", lambda pdf: None)
-    monkeypatch.setattr(ingest, "ocr_if_needed", lambda pdf, log: None)
-    monkeypatch.setattr(ingest, "front_matter", lambda pdf: ["SVGD\nQiang Liu"])
-    monkeypatch.setattr(ingest, "page_count", lambda pdf: 10)
-    monkeypatch.setattr(ingest, "lookup", lambda *a, **k: dict(work))
-    monkeypatch.setattr(ingest, "ask_claude", lambda *a, **k: {"tags": ["mcmc"]})
+    monkeypatch.setattr(ingest, "settle", lambda _pdf: None)
+    monkeypatch.setattr(ingest, "ocr_if_needed", lambda _pdf, _log: None)
+    monkeypatch.setattr(ingest, "front_matter", lambda _pdf: ["SVGD\nQiang Liu"])
+    monkeypatch.setattr(ingest, "page_count", lambda _pdf: 10)
+    monkeypatch.setattr(ingest, "lookup", lambda *_a, **_k: dict(work))
+    monkeypatch.setattr(ingest, "ask_claude", lambda *_a, **_k: {"tags": ["mcmc"]})
     pdf = lib / "inbox" / "svgd.pdf"
     name = ingest.ingest(pdf, lib / "pdfs", lib / "catalog.toml", works(), {}, lambda _: None)
     # Catalogued as a work of its own instead of raising Duplicate (same arxiv).

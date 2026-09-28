@@ -6,7 +6,9 @@ from . import config
 
 
 def open_pdf(path, page):
-    subprocess.Popen(
+    """Open a PDF (a name in pdfs/, or an absolute path) in zathura; returns
+    the process so callers can close it again."""
+    return subprocess.Popen(
         ["zathura", f"--page={page}", str(config.pdfs_path() / path)],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
     )

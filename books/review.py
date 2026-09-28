@@ -31,14 +31,34 @@ def parked(kind):
     return sorted(folder.glob("*.pdf")) if folder.is_dir() else []
 
 
+NO_REASON = "reason not recorded (ingested before reasons were kept; [r]edo records one)"
+
+
+def problem(work):
+    """The review reason stored at ingest (older entries only say `true`)."""
+    return work["review"] if isinstance(work.get("review"), str) else NO_REASON
+
+
+def missing(work):
+    """Useful fields an entry lacks, as a hint for editing."""
+    gaps = [k for k in ("year", "authors") if not work.get(k)]
+    if not any(work.get(k) for k in ("doi", "arxiv", "isbn")):
+        gaps.append("doi/arxiv/isbn")
+    if work.get("type") == "article" and not work.get("venue"):
+        gaps.append("venue")
+    return gaps
+
+
 def items():
-    """Everything awaiting a decision, as (kind, name, description)."""
-    out = [("review", f, catalog.label(w)) for f, w in sorted(catalog.load().items()) if w.get("review")]
+    """Everything awaiting a decision, as (kind, name, description, problem)."""
+    out = [("review", f, catalog.label(w), problem(w))
+           for f, w in sorted(catalog.load().items()) if w.get("review")]
     for pdf in parked("duplicates"):
         existing, _, reason = why(pdf).partition("\t")
-        out.append(("dup", pdf.name, f"{pdf.name}  ≈ {existing} ({reason or 'duplicate'})"))
+        out.append(("dup", pdf.name, f"{pdf.name}  ≈ {existing}",
+                    f"{reason or 'duplicate'} of {existing or 'a catalogued work'}"))
     for pdf in parked("failed"):
-        out.append(("failed", pdf.name, f"{pdf.name}  ({why(pdf) or 'failed'})"))
+        out.append(("failed", pdf.name, pdf.name, why(pdf) or "ingest failed"))
     return out
 
 
@@ -151,19 +171,56 @@ def discard_failed(name):
 
 PARKED_IN = {"dup": "duplicates", "failed": "failed"}
 MENUS = {
-    "review": "[o]pen [a]ccept [e]dit [r]edo [d]elete [s]kip",
-    "dup": "[o]pen both [k]eep existing [p] replace existing [b]oth [s]kip",
-    "failed": "[o]pen [r]etry [d]elete [s]kip",
+    "review": "[a]ccept [e]dit [r]edo [d]elete [o]pen again [s]kip",
+    "dup": "[k]eep existing [p] replace existing [b]oth [o]pen again [s]kip",
+    "failed": "[r]etry [d]elete [o]pen again [s]kip",
 }
 
 
 def pick(entries):
-    lines = [f"{kind}\t{name}\t{kind:<7} {desc}" for kind, name, desc in entries]
+    """fzf over the items; the preview pane shows each one's problem."""
+    lines = [f"{kind}\t{name}\t{kind:<7} {desc}\t{why_}" for kind, name, desc, why_ in entries]
     chosen = subprocess.run(
-        ["fzf", "--delimiter", "\t", "--with-nth", "3", "--prompt", "review> ", "--no-sort"],
+        ["fzf", "--delimiter", "\t", "--with-nth", "3", "--prompt", "review> ", "--no-sort",
+         "--preview", "echo {4}", "--preview-window", "down,3,wrap", "--preview-label", " problem "],
         input="\n".join(lines), capture_output=True, text=True, check=False,  # Esc: rc 130
     ).stdout.strip()
     return chosen.split("\t", 2)[:2] if chosen else None
+
+
+RED, BOLD, DIM, OFF = "\033[1;31m", "\033[1m", "\033[2m", "\033[0m"
+
+
+def show(kind, name, pdf):
+    """Print the problem first, highlighted, then the details."""
+    if kind == "review":
+        work = catalog.load().get(name, {})
+        print(f"\n{RED}problem:{OFF} {problem(work)}")
+        gaps = missing(work)
+        if gaps:
+            print(f"{BOLD}missing:{OFF} {', '.join(gaps)}")
+        print(f"{DIM}{catalog.entry_block(name) or name}{OFF}")
+    else:
+        existing, _, reason = why(pdf).partition("\t") if kind == "dup" else ("", "", why(pdf))
+        detail = f"{reason or 'duplicate'} of {existing}" if kind == "dup" else reason or "ingest failed"
+        print(f"\n{RED}problem:{OFF} {detail}\n{DIM}{name}{OFF}")
+
+
+def open_for(kind, name, pdf):
+    """Open what the decision is about; returns the viewer processes."""
+    if kind == "review":
+        return [open_pdf(name, 1)]
+    viewers = [open_pdf(str(pdf), 1)]
+    existing = why(pdf).partition("\t")[0] if kind == "dup" else ""
+    if existing and (config.pdfs_path() / existing).exists():
+        viewers.append(open_pdf(existing, 1))  # side by side with the catalogued copy
+    return viewers
+
+
+def close(viewers):
+    for v in viewers:
+        if v.poll() is None:
+            v.terminate()
 
 
 def confirm(question):
@@ -171,21 +228,26 @@ def confirm(question):
 
 
 def act(kind, name):
-    """Show one item and run the chosen action; returns a status line."""
+    """Show one item with its PDF open and run the chosen action; the viewers
+    close again afterwards. Returns a status line."""
     pdf = config.inbox_path() / PARKED_IN[kind] / name if kind in PARKED_IN else None
-    existing = why(pdf).partition("\t")[0] if kind == "dup" and pdf else ""
-    print(catalog.entry_block(name) if kind == "review" else f"{name}\n  {why(pdf) if pdf else ''}")
-    key = input(MENUS[kind] + ": ").strip().lower()[:1]
+    viewers = open_for(kind, name, pdf)
+    try:
+        show(kind, name, pdf)
+        while True:
+            key = input(MENUS[kind] + ": ").strip().lower()[:1]
+            if key != "o":
+                break
+            close(viewers)
+            viewers = open_for(kind, name, pdf)
+        return decide(kind, name, pdf, key)
+    finally:
+        close(viewers)
 
+
+def decide(kind, name, pdf, key):
+    existing = why(pdf).partition("\t")[0] if kind == "dup" and pdf else ""
     match kind, key:
-        case "review", "o":
-            open_pdf(name, 1)
-        case "dup", "o":
-            open_pdf(str(pdf), 1)
-            if existing:
-                open_pdf(existing, 1)
-        case "failed", "o":
-            open_pdf(str(pdf), 1)
         case "review", "a":
             accept(name)
             return f"accepted {name}"

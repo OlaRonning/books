@@ -17,7 +17,8 @@ library.
 - **Duplicates** are caught on ingest (identical file, shared DOI/arXiv/ISBN,
   or same first author and near-identical title) and parked in
   `inbox/duplicates/`; nothing is deleted or replaced automatically.
-- **Review** what ingest could not settle with `books review`: accept, edit
+- **Review** what ingest could not settle with `books review`. Each item
+  shows its problem (recorded at ingest) and opens the PDF; then accept, edit
   (in `$EDITOR`, renaming the PDF to match), re-identify or delete flagged
   entries; keep, replace or keep-both for duplicates; retry failed PDFs. It
   works on any machine and only edits the catalog and moves files; anything
@@ -50,7 +51,7 @@ The library is never part of this repository.
     arxiv = "..."                  #   was verified against the PDF; used for
     isbn = "..."                   #   duplicate detection
     tags = ["optimization"]
-    review = true                  # set when identified without a lookup
+    review = "no DOI, ..."         # set when identified without a lookup: why
 
 ## Usage
 

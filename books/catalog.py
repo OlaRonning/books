@@ -66,7 +66,9 @@ def entry_text(file, work):
             lines.append(f"{key} = {toml_str(str(work[key]))}")
     lines.append("tags = [" + ", ".join(toml_str(t) for t in work.get("tags", [])) + "]")
     if work.get("review"):
-        lines.append("review = true  # identified without a lookup; check me")
+        # A string saying why (older entries: true). Cleared by `books review`.
+        reason = work["review"] if isinstance(work["review"], str) else "identified without a lookup"
+        lines.append(f"review = {toml_str(reason)}")
     return "\n".join(lines) + "\n"
 
 

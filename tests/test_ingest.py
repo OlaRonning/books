@@ -148,7 +148,7 @@ def test_catalog_entry_round_trips_through_toml():
     parsed = tomllib.loads(entry)["work"][0]
     assert parsed["authors"] == work["authors"]
     assert parsed["title"] == "A: B"
-    assert parsed["review"] is True
+    assert parsed["review"] == "identified without a lookup"  # legacy True becomes a reason
 
 
 def test_pending_classifies_library_contents(tmp_path):
@@ -275,3 +275,19 @@ def test_crossref_year_prefers_print_over_online_first():
            "issued": {"date-parts": [[2016, 5]]}, "published-print": {"date-parts": [[2017, 6]]}}
     work = ingest.crossref_work(msg)
     assert work is not None and work["year"] == 2017
+
+
+def test_review_reason_explains_what_failed():
+    assert ingest.review_reason({}, [], {"title": "T", "authors": ["A"]}) == (
+        "no DOI, arXiv id or ISBN in the first 15 pages; Crossref title search found no confident match")
+    notes = ['doi 10.1145/1 is "A column approximate", not this PDF; skipping',
+             "identified via something unrelated"]
+    reason = ingest.review_reason({"doi": ["10.1145/1"]}, notes, {"title": "T", "authors": ["A"]})
+    assert reason.startswith('doi 10.1145/1 is "A column approximate", not this PDF; skipping')
+    assert "identified via" not in reason
+    assert "Claude could not read" in ingest.review_reason({}, ["claude failed: timeout"], {})
+
+
+def test_catalog_entry_stores_the_review_reason():
+    entry = catalog.entry_text("x.pdf", {"title": "T", "review": 'no "DOI" found'})
+    assert tomllib.loads(entry)["work"][0]["review"] == 'no "DOI" found'

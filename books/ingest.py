@@ -512,6 +512,21 @@ def settle(pdf, seconds=10):
         time.sleep(max(1, seconds - age))
 
 
+REVIEW_HINTS = ("not this PDF", "lookup failed", "search failed", "claude failed",
+                "ignoring DOI", "skipping")
+
+
+def review_reason(ids, notes, meta):
+    """Why a work could not be confirmed, in one line for `books review`."""
+    parts = [] if ids else [f"no DOI, arXiv id or ISBN in the first {FRONT_PAGES} pages"]
+    parts += [n for n in notes if any(h in n for h in REVIEW_HINTS)]
+    if not (meta.get("title") and meta.get("authors")):
+        parts.append("Claude could not read the title and authors")
+    elif not any("crossref search" in n for n in notes):
+        parts.append("Crossref title search found no confident match")
+    return "; ".join(dict.fromkeys(parts))[:400]
+
+
 class Duplicate(Exception):
     """The PDF is already in the library: args are (existing file, reason)."""
 
@@ -530,13 +545,19 @@ def ingest(pdf, shelf, cat_path, works, hashes, log, is_book=False):
     front, pages = front_matter(pdf), page_count(pdf)
     text = claude_text(front)
     vocab = {t for w in works.values() for t in w.get("tags", [])}
+    notes = []  # what went wrong identifying this PDF, for `books review`
 
-    known = lookup(find_ids("\n".join(front), pdf.name), pages, front, log, is_book)
+    def note(msg):
+        notes.append(msg.strip())
+        log(msg)
+
+    ids = find_ids("\n".join(front), pdf.name)
+    known = lookup(ids, pages, front, note, is_book)
     if is_book and known is None:
         text = f"(This PDF was merged from a folder of chapter files.)\n{text}"
-    meta = ask_claude(text, pdf.name, pages, vocab, known, log) or {}
+    meta = ask_claude(text, pdf.name, pages, vocab, known, note) or {}
     if known is None and meta.get("title") and meta.get("authors"):
-        known = search_verified(meta, front, is_book or pages > BOOK_PAGES, log)
+        known = search_verified(meta, front, is_book or pages > BOOK_PAGES, note)
     work = dict(meta)
     if known:  # identifier metadata wins for the bibliographic fields
         work.update({k: v for k, v in known.items() if v})
@@ -545,7 +566,7 @@ def ingest(pdf, shelf, cat_path, works, hashes, log, is_book=False):
     work.setdefault("title", pdf.stem)
     work["year"] = pick_year(work, imprint_year("\n".join(front)))
     work["tags"] = [t.strip().lower().replace(" ", "-") for t in meta.get("tags", []) if t.strip()]
-    work["review"] = known is None
+    work["review"] = review_reason(ids, notes, meta) if known is None else False
     if not work.get("authors"):
         work["authors"] = []
     match = None if keep else dupes.find_match(work, works)
