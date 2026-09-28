@@ -652,22 +652,34 @@ def park(pdf, lib, where):
         shutil.move(pdf, dest / pdf.name)
 
 
+MAX_PASSES = 20
+
+
 def process(log=lambda s: print(s, flush=True)):
+    """Ingest everything pending, re-scanning until a pass finds nothing:
+    the path unit ignores events while this runs, so files that arrive
+    mid-run (e.g. a sync delivering a batch in waves) join this run instead
+    of waiting for the nightly sweep. Every item leaves the queue (shelved or
+    parked), so passes terminate."""
     lib, shelf, cat = config.LIBRARY, config.pdfs_path(), config.catalog_path()
-    todo = pending(lib, shelf, set(catalog.load()), log)
-    hashes = {dupes.sha256(p): p.name for p in shelf.glob("*.pdf")} if todo else {}
-    done = []
-    for pdf, is_book in todo:
-        try:
-            done.append(ingest(pdf, shelf, cat, catalog.load(), hashes, log, is_book))
-        except Duplicate as dup:
-            existing, reason = dup.args
-            log(f"  duplicate of {existing} ({reason}); parked in inbox/duplicates/")
-            park(pdf, lib, "duplicates")
-        except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as err:
-            # One bad PDF must not stop the rest: park it in inbox/failed/.
-            log(f"  failed on {pdf.name}: {err}")
-            park(pdf, lib, "failed")
+    hashes, done = None, []
+    for _ in range(MAX_PASSES):
+        todo = pending(lib, shelf, set(catalog.load()), log)
+        if not todo:
+            break
+        if hashes is None:
+            hashes = {dupes.sha256(p): p.name for p in shelf.glob("*.pdf")}
+        for pdf, is_book in todo:
+            try:
+                done.append(ingest(pdf, shelf, cat, catalog.load(), hashes, log, is_book))
+            except Duplicate as dup:
+                existing, reason = dup.args
+                log(f"  duplicate of {existing} ({reason}); parked in inbox/duplicates/")
+                park(pdf, lib, "duplicates")
+            except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as err:
+                # One bad PDF must not stop the rest: park it in inbox/failed/.
+                log(f"  failed on {pdf.name}: {err}")
+                park(pdf, lib, "failed")
     for other in (lib / "inbox").glob("*") if (lib / "inbox").is_dir() else []:
         if other.is_file() and other.suffix.lower() != ".pdf":
             log(f"skipping non-PDF in inbox: {other.name}")

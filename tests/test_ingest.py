@@ -232,3 +232,18 @@ def test_search_hit_must_describe_the_pdf(monkeypatch):
     monkeypatch.setattr(ingest, "search_crossref", lambda title, author: dict(mh))
     hit = ingest.search_verified(mh, MH_ISAM2, False, log=lambda _: None)
     assert hit is not None and hit["doi"] == mh["doi"]
+
+
+def test_process_picks_up_files_that_arrive_mid_run(tmp_path, monkeypatch):
+    from books import config
+
+    lib = tmp_path
+    (lib / "pdfs").mkdir()
+    (lib / "catalog.toml").write_text("")
+    monkeypatch.setattr(config, "LIBRARY", lib)
+    arrivals = [[lib / "a.pdf"], [lib / "b.pdf"], []]  # b.pdf lands during a.pdf's run
+    monkeypatch.setattr(ingest, "pending", lambda *a, **k: [(p, False) for p in arrivals.pop(0)])
+    seen = []
+    monkeypatch.setattr(ingest, "ingest", lambda pdf, *a, **k: seen.append(pdf.name) or pdf.name)
+    assert ingest.process(log=lambda _: None) == ["a.pdf", "b.pdf"]
+    assert seen == ["a.pdf", "b.pdf"]
