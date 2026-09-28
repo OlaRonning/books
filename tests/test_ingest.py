@@ -225,11 +225,11 @@ def test_search_hit_must_describe_the_pdf(monkeypatch):
     # A wrong catalog title ("Davis et al.") must not confirm itself via search.
     davis = {"title": "A column approximate minimum degree ordering algorithm",
              "authors": ["Timothy A. Davis"], "doi": "10.1145/1024074.1024079"}
-    monkeypatch.setattr(ingest, "search_crossref", lambda title, author: dict(davis))
+    monkeypatch.setattr(ingest, "search_crossref", lambda _title, _author: dict(davis))
     assert ingest.search_verified(davis, MH_ISAM2, False, log=lambda _: None) is None
     mh = {"title": "MH-iSAM2: Multi-hypothesis iSAM using Bayes Tree and Hypo-tree",
           "authors": ["Ming Hsiao", "Michael Kaess"], "doi": "10.1109/ICRA.2019.8793854"}
-    monkeypatch.setattr(ingest, "search_crossref", lambda title, author: dict(mh))
+    monkeypatch.setattr(ingest, "search_crossref", lambda _title, _author: dict(mh))
     hit = ingest.search_verified(mh, MH_ISAM2, False, log=lambda _: None)
     assert hit is not None and hit["doi"] == mh["doi"]
 
@@ -242,9 +242,9 @@ def test_process_picks_up_files_that_arrive_mid_run(tmp_path, monkeypatch):
     (lib / "catalog.toml").write_text("")
     monkeypatch.setattr(config, "LIBRARY", lib)
     arrivals = [[lib / "a.pdf"], [lib / "b.pdf"], []]  # b.pdf lands during a.pdf's run
-    monkeypatch.setattr(ingest, "pending", lambda *a, **k: [(p, False) for p in arrivals.pop(0)])
+    monkeypatch.setattr(ingest, "pending", lambda *_a, **_k: [(p, False) for p in arrivals.pop(0)])
     seen = []
-    monkeypatch.setattr(ingest, "ingest", lambda pdf, *a, **k: seen.append(pdf.name) or pdf.name)
+    monkeypatch.setattr(ingest, "ingest", lambda pdf, *_a, **_k: seen.append(pdf.name) or pdf.name)
     assert ingest.process(log=lambda _: None) == ["a.pdf", "b.pdf"]
     assert seen == ["a.pdf", "b.pdf"]
 
