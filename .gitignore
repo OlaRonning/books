@@ -1,0 +1,14 @@
+# Code only. Never commit library content: PDFs, catalogs, indexes.
+*.pdf
+*.sqlite
+*.sqlite.tmp
+catalog.toml
+inbox/
+
+# Build and tooling
+result
+result-*
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.direnv/

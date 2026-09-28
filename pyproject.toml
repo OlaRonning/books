@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "books"
+version = "0.1.0"
+description = "Page-level full-text search and automatic cataloguing for a PDF library"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+# Merging chapter folders on the hub.
+ingest = ["pikepdf"]
+
+[project.scripts]
+books = "books.cli:main"
+books-rofi = "books.rofi:main"
+
+[tool.setuptools]
+packages = ["books"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 110
+
+[tool.pyright]
+include = ["books", "tests"]
+extraPaths = ["."]
