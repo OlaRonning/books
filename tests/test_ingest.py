@@ -91,3 +91,23 @@ def test_catalog_entry_round_trips_through_toml():
     assert parsed["authors"] == work["authors"]
     assert parsed["title"] == "A: B"
     assert parsed["review"] is True
+
+
+def test_pending_classifies_library_contents(tmp_path):
+    lib, shelf = tmp_path, tmp_path / "pdfs"
+    (lib / "inbox").mkdir()
+    shelf.mkdir()
+    (lib / "catalog.toml").write_text("")
+    (lib / "inbox" / "new.pdf").touch()
+    (lib / "Known - Old Layout (2000).pdf").touch()   # catalogued, old flat layout
+    (lib / "dropped.pdf").touch()                     # new, dropped in the root
+    (shelf / "Known - Shelved (2001).pdf").touch()    # catalogued, in place
+    (shelf / "unnamed.pdf").touch()                   # on the shelf, not catalogued
+    catalogued = {"Known - Old Layout (2000).pdf", "Known - Shelved (2001).pdf"}
+
+    todo = ingest.pending(lib, shelf, catalogued, log=lambda s: None)
+
+    assert sorted(p.relative_to(lib).as_posix() for p, _ in todo) == [
+        "dropped.pdf", "inbox/new.pdf", "pdfs/unnamed.pdf"]
+    assert (shelf / "Known - Old Layout (2000).pdf").exists()  # shelved, not re-ingested
+    assert not any(is_book for _, is_book in todo)

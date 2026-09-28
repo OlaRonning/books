@@ -7,7 +7,7 @@ from . import config
 
 def open_pdf(path, page):
     subprocess.Popen(
-        ["zathura", f"--page={page}", str(config.LIBRARY / path)],
+        ["zathura", f"--page={page}", str(config.pdfs_path() / path)],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
     )
 

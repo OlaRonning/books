@@ -10,8 +10,8 @@ something lands in the library or its inbox). For each new PDF:
      (Crossref, arXiv, Open Library) for exact metadata. `claude -p` then
      picks tags from the existing vocabulary, and fills in authors/title/
      year/type itself when no identifier resolved.
-  3. Rename to 'Author - Title (Year[, ed]).pdf' in the library root and
-     append a [[work]] entry to catalog.toml (review = true when unsure).
+  3. Rename to 'Author - Title (Year[, ed]).pdf' in pdfs/ and append a
+     [[work]] entry to catalog.toml (review = true when unsure).
 """
 
 import json
@@ -271,7 +271,7 @@ def clean(s):
     return " ".join(s.split())
 
 
-def file_name(work, root):
+def file_name(work, shelf):
     title = clean(work["title"])
     if len(title) > 120:
         title = title[:120].rsplit(" ", 1)[0]
@@ -282,7 +282,7 @@ def file_name(work, root):
     suffix = f" ({', '.join(bits)})" if bits else ""
     base = f"{clean(short_authors(work))} - {title}{suffix}"
     name, n = f"{base}.pdf", 2
-    while (root / name).exists():
+    while (shelf / name).exists():
         name, n = f"{base} [{n}].pdf", n + 1
     return name
 
@@ -422,9 +422,9 @@ def settle(pdf, seconds=10):
         time.sleep(max(1, seconds - age))
 
 
-def ingest(pdf, root, catalog, vocab, log, is_book=False):
-    """Process one PDF; returns its new file name in the library root."""
-    log(f"ingesting {pdf.relative_to(root)}")
+def ingest(pdf, shelf, catalog, vocab, log, is_book=False):
+    """Process one PDF; returns its new file name in pdfs/ (the shelf)."""
+    log(f"ingesting {pdf.relative_to(shelf.parent)}")
     settle(pdf)
     ocr_if_needed(pdf, log)
     text, pages = first_pages(pdf), page_count(pdf)
@@ -444,20 +444,26 @@ def ingest(pdf, root, catalog, vocab, log, is_book=False):
     if not work.get("authors"):
         work["authors"] = []
 
-    name = file_name(work, root)
-    shutil.move(pdf, root / name)
+    name = file_name(work, shelf)
+    shutil.move(pdf, shelf / name)
     append_catalog(catalog, catalog_entry(name, work))
     log(f"  -> {name}  [{', '.join(work['tags'])}]" + ("  (review)" if work["review"] else ""))
     return name
 
 
-def pending(root, catalogued, log):
-    """PDFs to ingest: inbox PDFs plus uncatalogued PDFs in the root. Chapter
-    folders in either place are merged into one PDF first."""
-    box = root / "inbox"
+# Library subdirectories that are never chapter folders.
+RESERVED = {"inbox", "notes", "pdfs"}
+
+
+def pending(lib, shelf, catalogued, log):
+    """PDFs to ingest: anything in inbox/ or loose in the library directory,
+    plus uncatalogued PDFs on the shelf. Chapter folders are merged first; a
+    loose PDF that is already catalogued (old flat layout) just moves to the
+    shelf."""
+    box = lib / "inbox"
     merged = set()
     folders = [d for d in box.glob("*") if d.is_dir() and d.name != "failed"] if box.is_dir() else []
-    folders += [d for d in root.glob("*") if d.is_dir() and d.name not in ("inbox", "notes")
+    folders += [d for d in lib.glob("*") if d.is_dir() and d.name not in RESERVED
                 and not d.name.startswith(".")]
     for folder in sorted(folders):
         if not any(folder.glob("*.pdf")):
@@ -468,28 +474,37 @@ def pending(root, catalogued, log):
             merged.add(merge_chapters(folder, log))
         except (OSError, ValueError) as err:  # unreadable/corrupt chapter PDFs
             log(f"  could not merge {folder.name}: {err}")
+    has_catalog = (lib / "catalog.toml").exists()
+    shelf.mkdir(exist_ok=True)
+    loose = []
+    for pdf in sorted(lib.glob("*.pdf")):
+        if pdf.name in catalogued and not (shelf / pdf.name).exists():
+            log(f"shelving catalogued {pdf.name}")
+            shutil.move(pdf, shelf / pdf.name)
+        elif has_catalog or pdf in merged:
+            loose.append(pdf)
     inbox = sorted(box.glob("*.pdf")) if box.is_dir() else []
-    # Without a catalog every root PDF would look new (e.g. mid first sync).
-    loose = sorted(p for p in root.glob("*.pdf") if p.name not in catalogued) \
-        if (root / "catalog.toml").exists() else []
-    return [(p, p in merged) for p in inbox + loose]
+    # Without a catalog every shelved PDF would look new (e.g. mid first sync).
+    unshelved = sorted(p for p in shelf.glob("*.pdf") if p.name not in catalogued) \
+        if has_catalog else []
+    return [(p, p in merged) for p in inbox + loose + unshelved]
 
 
 def process(log=lambda s: print(s, flush=True)):
-    root, cat = config.LIBRARY, config.catalog_path()
+    lib, shelf, cat = config.LIBRARY, config.pdfs_path(), config.catalog_path()
     done = []
-    for pdf, is_book in pending(root, set(catalog.load()), log):
+    for pdf, is_book in pending(lib, shelf, set(catalog.load()), log):
         vocab = {t for w in catalog.load().values() for t in w.get("tags", [])}
         try:
-            done.append(ingest(pdf, root, cat, vocab, log, is_book))
+            done.append(ingest(pdf, shelf, cat, vocab, log, is_book))
         except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as err:
             # One bad PDF must not stop the rest: park it in inbox/failed/.
             log(f"  failed on {pdf.name}: {err}")
-            failed = root / "inbox" / "failed"
+            failed = lib / "inbox" / "failed"
             failed.mkdir(parents=True, exist_ok=True)
             if pdf.exists():
                 shutil.move(pdf, failed / pdf.name)
-    for other in (root / "inbox").glob("*") if (root / "inbox").is_dir() else []:
+    for other in (lib / "inbox").glob("*") if (lib / "inbox").is_dir() else []:
         if other.is_file() and other.suffix.lower() != ".pdf":
             log(f"skipping non-PDF in inbox: {other.name}")
     return done

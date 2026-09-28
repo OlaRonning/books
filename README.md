@@ -18,10 +18,10 @@ library.
 ## Library layout
 
     ~/books/
-      Author - Title (Year[, edition]).pdf   one PDF per work, flat
-      catalog.toml                          one [[work]] per PDF
-      inbox/                                drop PDFs or chapter folders here
-      .books-index.sqlite                   the search index (built on the hub)
+      pdfs/                  one PDF per work: Author - Title (Year[, edition]).pdf
+      inbox/                 drop PDFs or chapter folders here (or in ~/books itself)
+      catalog.toml           one [[work]] per PDF in pdfs/
+      .books-index.sqlite    the search index (built on the hub)
 
 The library is never part of this repository.
 

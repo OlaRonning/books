@@ -98,7 +98,7 @@ def build(full=False):
         db.execute("DELETE FROM docs WHERE path = ?", (name,))
 
     with ThreadPoolExecutor(os.cpu_count()) as pool:
-        texts = pool.map(lambda name: extract(config.LIBRARY / name), todo)
+        texts = pool.map(lambda name: extract(config.pdfs_path() / name), todo)
         for name, pages in zip(todo, texts):
             if pages is None:
                 continue

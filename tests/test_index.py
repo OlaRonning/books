@@ -31,8 +31,9 @@ def library(tmp_path, monkeypatch):
     lib = tmp_path / "books"
     lib.mkdir()
     (lib / "catalog.toml").write_text(CATALOG)
+    (lib / "pdfs").mkdir()
     for name in PAGES:
-        (lib / name).write_bytes(b"%PDF-1.4 stub")
+        (lib / "pdfs" / name).write_bytes(b"%PDF-1.4 stub")
     monkeypatch.setattr(config, "LIBRARY", lib)
     monkeypatch.setattr(config, "CACHE", tmp_path / "cache")
     monkeypatch.setattr(index, "extract", lambda pdf: PAGES[pdf.name])
@@ -79,8 +80,9 @@ def test_index_from_older_schema_is_rebuilt(tmp_path, monkeypatch):
     lib = tmp_path / "books"
     lib.mkdir()
     (lib / "catalog.toml").write_text(CATALOG)
+    (lib / "pdfs").mkdir()
     for name in PAGES:
-        (lib / name).write_bytes(b"%PDF-1.4 stub")
+        (lib / "pdfs" / name).write_bytes(b"%PDF-1.4 stub")
     monkeypatch.setattr(config, "LIBRARY", lib)
     monkeypatch.setattr(config, "CACHE", tmp_path / "cache")
     monkeypatch.setattr(index, "extract", lambda pdf: PAGES[pdf.name])

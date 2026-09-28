@@ -85,6 +85,7 @@ in
             PathChanged = [
               cfg.library
               "${cfg.library}/inbox"
+              "${cfg.library}/pdfs"
             ];
             MakeDirectory = true;
           };

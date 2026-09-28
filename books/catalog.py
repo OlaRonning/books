@@ -1,4 +1,4 @@
-"""catalog.toml: one [[work]] per PDF in the library root."""
+"""catalog.toml: one [[work]] per PDF in pdfs/ (`file` is the name within it)."""
 
 import sys
 import tomllib
@@ -23,9 +23,9 @@ def label(work):
 
 
 def library_pdfs():
-    """{file name: (mtime, size)} for the PDFs in the library root."""
+    """{file name: (mtime, size)} for the PDFs in pdfs/."""
     return {p.name: (p.stat().st_mtime, p.stat().st_size)
-            for p in config.LIBRARY.glob("*.pdf")}
+            for p in config.pdfs_path().glob("*.pdf")}
 
 
 def report(works, pdfs):
