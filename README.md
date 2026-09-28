@@ -33,6 +33,7 @@ The library is never part of this repository.
     books tags | books stats
     books add FILE|FOLDER...     queue for ingest
     books process                ingest the inbox and index (hub)
+    books redo FILE...           re-identify catalogued PDFs (hub)
     books index [--full]         rebuild the index (hub)
 
 rofi: `rofi -modi books:books-rofi -show books`. Typing filters the catalog;

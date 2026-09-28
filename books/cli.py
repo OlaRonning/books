@@ -10,6 +10,7 @@
                              hub merges, OCRs, identifies, names, catalogs and
                              indexes them
   books process              ingest the inbox, then index (hub only)
+  books redo FILE...         re-identify catalogued PDFs from scratch (hub only)
   books index [--full]       (re)build the index (hub only)
 
 The library is BOOKS_DIR (default ~/books); BOOKS_HUB names the one machine
@@ -50,6 +51,23 @@ def process():
     with hub_lock():
         ingest.process()
         index.build()
+
+
+def redo(names):
+    """Drop the catalog entries and send the PDFs back through ingest."""
+    from . import ingest
+
+    names = [Path(n).name for n in names]
+    with hub_lock():
+        removed = ingest.remove_catalog_entries(config.catalog_path(), set(names))
+        for name in names:
+            if name not in removed:
+                print(f"not in catalog: {name}", file=sys.stderr)
+                continue
+            config.inbox_path().mkdir(parents=True, exist_ok=True)
+            shutil.move(config.pdfs_path() / name, config.inbox_path() / name)
+            print(f"re-queued {name}")
+    process()
 
 
 def add(paths, move):
@@ -112,6 +130,11 @@ def main(argv=None):
         return
     if cmd == "process":
         process()
+        return
+    if cmd == "redo":
+        p = argparse.ArgumentParser(prog="books redo")
+        p.add_argument("names", nargs="+", metavar="FILE", help="PDF file name in pdfs/")
+        redo(p.parse_args(argv[1:]).names)
         return
     if cmd == "add":
         p = argparse.ArgumentParser(prog="books add")

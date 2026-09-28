@@ -95,3 +95,15 @@ def test_index_from_older_schema_is_rebuilt(tmp_path, monkeypatch):
     old.close()
     index.build()
     assert [f for f, *_ in index.hits(["kalman"])] == ["Barfoot - State Estimation (2025).pdf"]
+
+
+@pytest.mark.usefixtures("library")
+def test_catalog_edit_reindexes_only_that_work(capsys):
+    capsys.readouterr()
+    cat = config.catalog_path()
+    cat.write_text(cat.read_text().replace('tags = ["statistics", "scoring-rules"]',
+                                           'tags = ["statistics", "scoring-rules", "forecasting"]'))
+    index.build()
+    out = capsys.readouterr().out
+    assert out.count("indexed ") == 1 and "Gneiting" in out
+    assert [f for f, *_ in index.hits(["forecasting"], tags=["forecasting"])]

@@ -111,3 +111,53 @@ def test_pending_classifies_library_contents(tmp_path):
         "dropped.pdf", "inbox/new.pdf", "pdfs/unnamed.pdf"]
     assert (shelf / "Known - Old Layout (2000).pdf").exists()  # shelved, not re-ingested
     assert not any(is_book for _, is_book in todo)
+
+
+CAMBRIDGE = """Downloaded from https://www.cambridge.org/core. IP address: 203.0.113.7, on 28 Sep 2026 at 11:28:52, subject to the Cambridge Core terms of use, available at
+https://www.cambridge.org/core/terms. https://www.cambridge.org/core/product/819623B1B5B33836476618AC0621F0EE
+FOUNDATIONS OF PROBABILISTIC PROGRAMMING
+"""
+
+
+def test_strip_watermarks_removes_download_stamps():
+    cleaned = ingest.strip_watermarks(CAMBRIDGE)
+    assert "IP address" not in cleaned and "cambridge.org/core" not in cleaned
+    assert cleaned.strip() == "FOUNDATIONS OF PROBABILISTIC PROGRAMMING"
+
+
+@pytest.mark.parametrize(("text", "year"), [
+    ("First published 2021\nISBN 978-1-108-48851-8 Hardback", 2021),
+    ("© Gilles Barthe, Joost-Pieter Katoen and Alexandra Silva 2021", 2021),
+    ("Copyright © 1998, 2003 by Someone", 2003),
+    ("No imprint here, but 1999 appears in prose.", None),
+])
+def test_imprint_year(text, year):
+    assert ingest.imprint_year(text) == year
+
+
+def test_claude_text_includes_late_imprint_page():
+    pages = ["half title", "bio", "series", "title page", "blank", "© 2021 ... ISBN 978...", "contents"]
+    text = ingest.claude_text(pages)
+    assert "half title" in text and "[imprint page]" in text and "ISBN" in text
+    assert "contents" not in text
+
+
+def test_remove_catalog_entries(tmp_path):
+    cat = tmp_path / "catalog.toml"
+    cat.write_text('# header\n\n[[work]]\nfile = "A - X (2000).pdf"\ntitle = "X"\n\n'
+                   '[[work]]\nfile = "B & C - \\"Y\\" (2001).pdf"\ntitle = "Y"\n')
+    assert ingest.remove_catalog_entries(cat, {'B & C - "Y" (2001).pdf'}) == ['B & C - "Y" (2001).pdf']
+    parsed = tomllib.loads(cat.read_text())
+    assert [w["file"] for w in parsed["work"]] == ["A - X (2000).pdf"]
+    assert cat.read_text().startswith("# header")
+    assert ingest.remove_catalog_entries(cat, {"missing.pdf"}) == []
+
+
+@pytest.mark.parametrize(("work", "imprint", "year"), [
+    ({"type": "book", "year": 2020}, 2021, 2021),      # imprint beats catalogue year
+    ({"type": "article", "year": 2007}, 2008, 2007),   # article: lookup year stands
+    ({"type": "article"}, 2008, 2008),                 # nothing else: imprint
+    ({"type": "book", "year": 2006}, None, 2006),
+])
+def test_pick_year(work, imprint, year):
+    assert ingest.pick_year(work, imprint) == year

@@ -7,6 +7,7 @@ is built in the cache directory, and is moved into place in one step.
 """
 
 import hashlib
+import json
 import os
 import shutil
 import sqlite3
@@ -17,10 +18,10 @@ from concurrent.futures import ThreadPoolExecutor
 from . import catalog, config
 
 # Bump when SCHEMA changes: indexes built with another version are rebuilt.
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS docs (
-    path TEXT PRIMARY KEY, mtime REAL, size INTEGER, pages INTEGER
+    path TEXT PRIMARY KEY, mtime REAL, size INTEGER, pages INTEGER, entry TEXT
 );
 CREATE TABLE IF NOT EXISTS works (
     file TEXT PRIMARY KEY, type TEXT, label TEXT, tags TEXT
@@ -49,11 +50,20 @@ def extract(pdf):
     return pages
 
 
+def entry_hash(work):
+    """Fingerprint of a catalog entry; a page's metadata is stale when it changes."""
+    return hashlib.sha256(json.dumps(work, sort_keys=True).encode()).hexdigest()
+
+
+def work_rows(works):
+    return sorted((f, w.get("type", ""), catalog.label(w), "," + ",".join(w.get("tags", [])) + ",")
+                  for f, w in works.items())
+
+
 def build(full=False):
-    """Bring the index up to date; a no-op (no file written) when nothing changed."""
+    """Bring the index up to date: re-extract only PDFs whose file or catalog
+    entry changed. A no-op (no file written) when nothing changed."""
     works = catalog.load()
-    cat = config.catalog_path()
-    catalog_hash = hashlib.sha256(cat.read_bytes()).hexdigest() if cat.exists() else ""
     index = config.index_path()
 
     config.CACHE.mkdir(parents=True, exist_ok=True)
@@ -68,19 +78,20 @@ def build(full=False):
         meta = dict(db.execute("SELECT key, value FROM meta").fetchall())
     except sqlite3.DatabaseError:
         meta = {}  # unreadable or foreign schema
-    rebuild = meta.get("schema") != SCHEMA_VERSION or meta.get("catalog") != catalog_hash
-    if rebuild:
-        # Catalog metadata is baked into every page row; start over.
+    if meta.get("schema") != SCHEMA_VERSION:
         db.close()
         tmp.unlink()
         db = sqlite3.connect(tmp)
         db.executescript(SCHEMA)
 
-    known = {p: (m, s) for p, m, s in db.execute("SELECT path, mtime, size FROM docs")}
-    current = catalog.library_pdfs()
+    known = {p: (m, s, e) for p, m, s, e in db.execute("SELECT path, mtime, size, entry FROM docs")}
+    current = {name: (*sig, entry_hash(works.get(name, {})))
+               for name, sig in catalog.library_pdfs().items()}
     gone = known.keys() - current.keys()
     todo = [p for p, sig in current.items() if known.get(p) != sig]
-    if not (rebuild or todo or gone):
+    rows = work_rows(works)
+    works_changed = rows != sorted(db.execute("SELECT file, type, label, tags FROM works"))
+    if not (todo or gone or works_changed):
         db.close()
         tmp.unlink()
         print(f"index up to date ({len(current)} PDFs)")
@@ -88,11 +99,7 @@ def build(full=False):
         return
 
     db.execute("DELETE FROM works")
-    db.executemany(
-        "INSERT INTO works VALUES (?, ?, ?, ?)",
-        ((f, w.get("type", ""), catalog.label(w), "," + ",".join(w.get("tags", [])) + ",")
-         for f, w in works.items()),
-    )
+    db.executemany("INSERT INTO works VALUES (?, ?, ?, ?)", rows)
     for name in gone | set(todo):
         db.execute("DELETE FROM pages WHERE path = ?", (name,))
         db.execute("DELETE FROM docs WHERE path = ?", (name,))
@@ -108,12 +115,11 @@ def build(full=False):
                 "INSERT INTO pages (meta, body, path, page) VALUES (?, ?, ?, ?)",
                 ((meta, text, name, i) for i, text in enumerate(pages, 1)),
             )
-            mtime, size = current[name]
-            db.execute("INSERT INTO docs VALUES (?, ?, ?, ?)", (name, mtime, size, len(pages)))
+            mtime, size, entry = current[name]
+            db.execute("INSERT INTO docs VALUES (?, ?, ?, ?, ?)", (name, mtime, size, len(pages), entry))
             print(f"indexed {name} ({len(pages)} pages)")
 
-    db.executemany("INSERT OR REPLACE INTO meta VALUES (?, ?)",
-                   [("catalog", catalog_hash), ("schema", SCHEMA_VERSION)])
+    db.execute("INSERT OR REPLACE INTO meta VALUES ('schema', ?)", (SCHEMA_VERSION,))
     db.commit()
     db.execute("INSERT INTO pages(pages) VALUES ('optimize')")
     db.commit()

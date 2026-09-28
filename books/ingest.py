@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -44,6 +45,50 @@ def first_pages(pdf, n=5):
                           capture_output=True, text=True, check=False).stdout
 
 
+# Download stamps (e.g. Cambridge Core: "Downloaded from ... IP address: ...")
+# are noise for identification and should not be sent anywhere.
+WATERMARK = re.compile(r"^.*(Downloaded from|IP address|subject to the .* terms of use|"
+                       r"cambridge\.org/core/(terms|product)).*$\n?", re.MULTILINE | re.IGNORECASE)
+IMPRINT = re.compile(r"ISBN|©|\(c\) ?(19|20)\d\d|First published|Copyright", re.IGNORECASE)
+FRONT_PAGES = 15  # copyright pages sit after half-title, bios and series pages
+
+
+def strip_watermarks(text):
+    return WATERMARK.sub("", text)
+
+
+def front_matter(pdf, n=FRONT_PAGES):
+    """The first n pages' text, one string per page, without download stamps."""
+    pages = first_pages(pdf, n).split("\f")
+    return [strip_watermarks(t) for t in pages]
+
+
+def claude_text(pages, n=5):
+    """What Claude sees: the first n pages, plus the imprint page if it is later."""
+    head = pages[:n]
+    imprint = next((t for t in pages[n:] if IMPRINT.search(t)), None)
+    return "\n\f".join(head + ([f"[imprint page]\n{imprint}"] if imprint else []))
+
+
+def imprint_year(text):
+    """Publication year from the imprint: 'First published 2021', else the
+    latest year on a copyright line."""
+    m = re.search(r"First published(?: in)?[^\n\d]{0,20}((?:19|20)\d\d)", text, re.IGNORECASE)
+    if m:
+        return int(m.group(1))
+    years = [int(y) for line in text.splitlines() if re.search(r"©|copyright|\(c\)", line, re.IGNORECASE)
+             for y in re.findall(r"\b((?:19|20)\d\d)\b", line)]
+    return max(years) if years else None
+
+
+def pick_year(work, imprint):
+    """A book's own imprint ('First published 2021') describes this copy;
+    catalogue years (Open Library's first_publish_year) can be another edition's."""
+    if imprint and (work.get("type") == "book" or not work.get("year")):
+        return imprint
+    return work.get("year")
+
+
 def page_count(pdf):
     out = subprocess.run(["pdfinfo", str(pdf)], capture_output=True, text=True,
                          check=False).stdout  # unreadable PDF: 0 pages
@@ -52,7 +97,7 @@ def page_count(pdf):
 
 
 def ocr_if_needed(pdf, log):
-    if len("".join(first_pages(pdf).split())) >= 200:
+    if len("".join(strip_watermarks(first_pages(pdf)).split())) >= 200:  # stamps are not text
         return
     log(f"  no text layer; running OCR on {pdf.name}")
     with tempfile.TemporaryDirectory() as tmp:
@@ -223,7 +268,7 @@ def ask_claude(text, filename, pages, vocab, known, log):
                      "authors, title and year exactly as given unless clearly wrong:\n"
                      + json.dumps(known, ensure_ascii=False) + "\n\n")
     prompt = PROMPT.format(vocab=", ".join(sorted(vocab)) or "(none yet)", known=known_txt,
-                           filename=filename, pages=pages, text=text[:12000])
+                           filename=filename, pages=pages, text=text[:15000])
     try:
         r = subprocess.run(
             ["claude", "-p", "--model", "sonnet", "--output-format", "json",
@@ -306,6 +351,21 @@ def catalog_entry(file, work):
     if work.get("review"):
         lines.append("review = true  # identified without a lookup; check me")
     return "\n".join(lines) + "\n"
+
+
+def remove_catalog_entries(catalog, names):
+    """Drop the [[work]] blocks for these file names; returns the names removed."""
+    text = catalog.read_text()
+    head, *blocks = re.split(r"(?m)^(?=\[\[work\]\]\s*$)", text)
+    kept, removed = [head], []
+    for block in blocks:
+        name = tomllib.loads(block)["work"][0].get("file")
+        (removed if name in names else kept).append(name if name in names else block)
+    if removed:
+        tmp = catalog.with_name(".catalog.toml.tmp")
+        tmp.write_text("".join(kept))
+        os.replace(tmp, catalog)
+    return removed
 
 
 def append_catalog(catalog, entry):
@@ -427,9 +487,10 @@ def ingest(pdf, shelf, catalog, vocab, log, is_book=False):
     log(f"ingesting {pdf.relative_to(shelf.parent)}")
     settle(pdf)
     ocr_if_needed(pdf, log)
-    text, pages = first_pages(pdf), page_count(pdf)
+    front, pages = front_matter(pdf), page_count(pdf)
+    text = claude_text(front)
 
-    known = lookup(find_ids(text, pdf.name), pages, log, is_book)
+    known = lookup(find_ids("\n".join(front), pdf.name), pages, log, is_book)
     if is_book and known is None:
         text = f"(This PDF was merged from a folder of chapter files.)\n{text}"
     meta = ask_claude(text, pdf.name, pages, vocab, known, log) or {}
@@ -439,6 +500,7 @@ def ingest(pdf, shelf, catalog, vocab, log, is_book=False):
     if is_book:
         work["type"] = "book"
     work.setdefault("title", pdf.stem)
+    work["year"] = pick_year(work, imprint_year("\n".join(front)))
     work["tags"] = [t.strip().lower().replace(" ", "-") for t in meta.get("tags", []) if t.strip()]
     work["review"] = known is None
     if not work.get("authors"):
