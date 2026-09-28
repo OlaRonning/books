@@ -17,6 +17,11 @@ library.
 - **Duplicates** are caught on ingest (identical file, shared DOI/arXiv/ISBN,
   or same first author and near-identical title) and parked in
   `inbox/duplicates/`; nothing is deleted or replaced automatically.
+- **Review** what ingest could not settle with `books review`: accept, edit
+  (in `$EDITOR`, renaming the PDF to match), re-identify or delete flagged
+  entries; keep, replace or keep-both for duplicates; retry failed PDFs. It
+  works on any machine and only edits the catalog and moves files; anything
+  to re-ingest goes back through `inbox/` to the hub.
 - **Multi-machine**: one hub writes; other machines read a synced copy of the
   library (e.g. with Syncthing) and queue new PDFs with `books add`.
 
@@ -56,6 +61,8 @@ The library is never part of this repository.
     books add FILE|FOLDER...     queue for ingest
     books process                ingest the inbox and index (hub)
     books redo FILE...           re-identify catalogued PDFs (hub)
+    books review                 work through flagged entries, parked duplicates
+                                 and failed ingests (fzf; o/a/e/r/d per item)
     books dupes [--backfill]     list suspected duplicates; --backfill first adds
                                  verified identifiers to existing entries (hub)
     books index [--full]         rebuild the index (hub)

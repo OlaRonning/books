@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from books import ingest
+from books import catalog, ingest
 
 
 @pytest.mark.parametrize(("name", "expected"), [
@@ -102,8 +102,8 @@ def test_update_catalog_entries_adds_missing_fields_only(tmp_path):
     cat = tmp_path / "catalog.toml"
     cat.write_text('# head\n\n[[work]]\nfile = "a.pdf"\ntitle = "A"\ndoi = "10.1/keep"\n\n'
                    '[[work]]\nfile = "b.pdf"\ntitle = "B"\n')
-    done = ingest.update_catalog_entries(cat, {"a.pdf": {"doi": "10.1/other", "arxiv": "1234.5678"},
-                                               "b.pdf": {"isbn": "9780387303031"}})
+    done = catalog.update_entries({"a.pdf": {"doi": "10.1/other", "arxiv": "1234.5678"},
+                                   "b.pdf": {"isbn": "9780387303031"}}, cat)
     works = {w["file"]: w for w in tomllib.loads(cat.read_text())["work"]}
     assert sorted(done) == ["a.pdf", "b.pdf"]
     assert works["a.pdf"]["doi"] == "10.1/keep" and works["a.pdf"]["arxiv"] == "1234.5678"
@@ -144,7 +144,7 @@ def test_chapter_title(stem, title):
 def test_catalog_entry_round_trips_through_toml():
     work = {"type": "book", "authors": ['Ann "Q" O\'Neil', "Bo Ek"], "title": "A: B",
             "year": 2001, "edition": "2nd", "tags": ["stats", "mcmc"], "review": True}
-    entry = ingest.catalog_entry("Neil & Ek - A, B (2001, 2nd ed).pdf", work)
+    entry = catalog.entry_text("Neil & Ek - A, B (2001, 2nd ed).pdf", work)
     parsed = tomllib.loads(entry)["work"][0]
     assert parsed["authors"] == work["authors"]
     assert parsed["title"] == "A: B"
@@ -204,11 +204,11 @@ def test_remove_catalog_entries(tmp_path):
     cat = tmp_path / "catalog.toml"
     cat.write_text('# header\n\n[[work]]\nfile = "A - X (2000).pdf"\ntitle = "X"\n\n'
                    '[[work]]\nfile = "B & C - \\"Y\\" (2001).pdf"\ntitle = "Y"\n')
-    assert ingest.remove_catalog_entries(cat, {'B & C - "Y" (2001).pdf'}) == ['B & C - "Y" (2001).pdf']
+    assert catalog.remove_entries({'B & C - "Y" (2001).pdf'}, cat) == ['B & C - "Y" (2001).pdf']
     parsed = tomllib.loads(cat.read_text())
     assert [w["file"] for w in parsed["work"]] == ["A - X (2000).pdf"]
     assert cat.read_text().startswith("# header")
-    assert ingest.remove_catalog_entries(cat, {"missing.pdf"}) == []
+    assert catalog.remove_entries({"missing.pdf"}, cat) == []
 
 
 @pytest.mark.parametrize(("work", "imprint", "year"), [

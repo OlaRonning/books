@@ -1,9 +1,19 @@
-"""catalog.toml: one [[work]] per PDF in pdfs/ (`file` is the name within it)."""
+"""catalog.toml: one [[work]] per PDF in pdfs/ (`file` is the name within it).
 
+Reads parse the whole file with tomllib. Writes edit it block by block, so
+comments, ordering and formatting of untouched entries survive, and every
+write replaces the file atomically (a sync tool never ships half a catalog).
+"""
+
+import json
+import os
+import re
 import sys
 import tomllib
 
 from . import config
+
+BLOCK = re.compile(r"(?m)^(?=\[\[work\]\]\s*$)")
 
 
 def load():
@@ -34,3 +44,119 @@ def report(works, pdfs):
         print(f"not in catalog: {name}", file=sys.stderr)
     for name in sorted(works.keys() - pdfs.keys()):
         print(f"catalog entry without file: {name}", file=sys.stderr)
+
+
+# --- writing -----------------------------------------------------------------
+
+def toml_str(s):
+    return json.dumps(s, ensure_ascii=False)  # JSON strings are valid TOML basic strings
+
+
+def entry_text(file, work):
+    """A [[work]] block for a new entry."""
+    lines = ["", "[[work]]", f"file = {toml_str(file)}", f"type = {toml_str(work.get('type', 'book'))}"]
+    lines.append("authors = [" + ", ".join(toml_str(a) for a in work.get("authors", [])) + "]")
+    if work.get("editors"):
+        lines.append("editors = true")
+    lines.append(f"title = {toml_str(work['title'])}")
+    if work.get("year"):
+        lines.append(f"year = {int(work['year'])}")
+    for key in ("edition", "venue", "doi", "arxiv", "isbn"):
+        if work.get(key):
+            lines.append(f"{key} = {toml_str(str(work[key]))}")
+    lines.append("tags = [" + ", ".join(toml_str(t) for t in work.get("tags", [])) + "]")
+    if work.get("review"):
+        lines.append("review = true  # identified without a lookup; check me")
+    return "\n".join(lines) + "\n"
+
+
+def _blocks(path):
+    head, *blocks = BLOCK.split(path.read_text())
+    return head, [(tomllib.loads(b)["work"][0].get("file"), b) for b in blocks]
+
+
+def _write(path, text):
+    tmp = path.with_name(".catalog.toml.tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+
+
+def _gap(block):
+    """Trailing blank lines of a block, kept when the block is rewritten."""
+    return block[len(block.rstrip("\n")):] or "\n"
+
+
+def append(entry, path=None):
+    path = path or config.catalog_path()
+    text = path.read_text() if path.exists() else ""
+    _write(path, text.rstrip("\n") + "\n" + entry)
+
+
+def entry_block(file, path=None):
+    """The [[work]] block text for `file` (for editing), or None."""
+    _, blocks = _blocks(path or config.catalog_path())
+    return next((b.rstrip("\n") + "\n" for name, b in blocks if name == file), None)
+
+
+def remove_entries(names, path=None):
+    """Drop the blocks for these file names; returns the names removed."""
+    path = path or config.catalog_path()
+    head, blocks = _blocks(path)
+    removed = [name for name, _ in blocks if name in names]
+    if removed:
+        _write(path, head + "".join(b for name, b in blocks if name not in names))
+    return removed
+
+
+def update_entries(updates, path=None):
+    """Add fields to existing blocks: updates is {file: {key: value}}. Keys a
+    block already has are left alone. Returns the files updated."""
+    path = path or config.catalog_path()
+    head, blocks = _blocks(path)
+    out, done = [head], []
+    for name, block in blocks:
+        entry = tomllib.loads(block)["work"][0]
+        new = {k: v for k, v in updates.get(name, {}).items() if k not in entry}
+        if new:
+            block = (block.rstrip("\n") + "\n"
+                     + "\n".join(f"{k} = {toml_str(str(v))}" for k, v in new.items()) + _gap(block))
+            done.append(name)
+        out.append(block)
+    if done:
+        _write(path, "".join(out))
+    return done
+
+
+def remove_key(file, key, path=None):
+    """Delete `key = ...` lines from the block for `file`; True if it had one."""
+    path = path or config.catalog_path()
+    head, blocks = _blocks(path)
+    out, changed = [head], False
+    for name, block in blocks:
+        if name == file:
+            kept = re.sub(rf"(?m)^{re.escape(key)}\s*=.*\n?", "", block)
+            changed = kept != block
+            block = kept
+        out.append(block)
+    if changed:
+        _write(path, "".join(out))
+    return changed
+
+
+def parse_entry(text):
+    """Validate an edited block: exactly one [[work]] with file and title."""
+    works = tomllib.loads(text).get("work", [])
+    if len(works) != 1 or not works[0].get("file") or not works[0].get("title"):
+        raise ValueError("expected exactly one [[work]] with `file` and `title`")
+    return works[0]
+
+
+def replace_entry(file, text, path=None):
+    """Replace the block for `file` with `text` (validated with parse_entry)."""
+    parse_entry(text)
+    path = path or config.catalog_path()
+    head, blocks = _blocks(path)
+    if file not in (name for name, _ in blocks):
+        raise KeyError(file)
+    _write(path, head + "".join(text.rstrip("\n") + "\n" + _gap(b) if name == file else b
+                                for name, b in blocks))

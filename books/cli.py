@@ -11,6 +11,8 @@
                              indexes them
   books process              ingest the inbox, then index (hub only)
   books redo FILE...         re-identify catalogued PDFs from scratch (hub only)
+  books review               work through flagged entries, parked duplicates
+                             and failed ingests (any machine)
   books dupes [--backfill]   list suspected duplicates; --backfill first adds
                              verified DOI/arXiv/ISBN fields to entries (hub only)
   books index [--full]       (re)build the index (hub only)
@@ -57,11 +59,9 @@ def process():
 
 def redo(names):
     """Drop the catalog entries and send the PDFs back through ingest."""
-    from . import ingest
-
     names = [Path(n).name for n in names]
     with hub_lock():
-        removed = ingest.remove_catalog_entries(config.catalog_path(), set(names))
+        removed = catalog.remove_entries(set(names))
         for name in names:
             if name not in removed:
                 print(f"not in catalog: {name}", file=sys.stderr)
@@ -153,6 +153,11 @@ def main(argv=None):
         return
     if cmd == "process":
         process()
+        return
+    if cmd == "review":
+        from . import review
+
+        review.main()
         return
     if cmd == "dupes":
         p = argparse.ArgumentParser(prog="books dupes")

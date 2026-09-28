@@ -21,7 +21,6 @@ import shutil
 import subprocess
 import tempfile
 import time
-import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -384,7 +383,8 @@ def clean(s):
     return " ".join(s.split())
 
 
-def file_name(work, shelf):
+def base_name(work):
+    """'Author - Title (Year[, ed]).pdf' for a work, before collision handling."""
     title = clean(work["title"])
     if len(title) > 120:
         title = title[:120].rsplit(" ", 1)[0]
@@ -394,75 +394,16 @@ def file_name(work, shelf):
         bits.append(ed if "draft" in ed else f"{ed} ed")
     suffix = f" ({', '.join(bits)})" if bits else ""
     base = f"{clean(short_authors(work))} - {title}{suffix}"
-    name, n = f"{base}.pdf", 2
+    return f"{base}.pdf"
+
+
+def file_name(work, shelf):
+    """base_name(work), made unique within `shelf` with a ' [n]' suffix."""
+    name = base_name(work)
+    stem, n = name[:-4], 2
     while (shelf / name).exists():
-        name, n = f"{base} [{n}].pdf", n + 1
+        name, n = f"{stem} [{n}].pdf", n + 1
     return name
-
-
-def toml_str(s):
-    return json.dumps(s, ensure_ascii=False)
-
-
-def catalog_entry(file, work):
-    lines = ["", "[[work]]", f"file = {toml_str(file)}", f"type = {toml_str(work.get('type', 'book'))}"]
-    lines.append("authors = [" + ", ".join(toml_str(a) for a in work.get("authors", [])) + "]")
-    if work.get("editors"):
-        lines.append("editors = true")
-    lines.append(f"title = {toml_str(work['title'])}")
-    if work.get("year"):
-        lines.append(f"year = {int(work['year'])}")
-    for key in ("edition", "venue", *dupes.ID_KEYS):
-        if work.get(key):
-            lines.append(f"{key} = {toml_str(str(work[key]))}")
-    lines.append("tags = [" + ", ".join(toml_str(t) for t in work.get("tags", [])) + "]")
-    if work.get("review"):
-        lines.append("review = true  # identified without a lookup; check me")
-    return "\n".join(lines) + "\n"
-
-
-def remove_catalog_entries(catalog, names):
-    """Drop the [[work]] blocks for these file names; returns the names removed."""
-    text = catalog.read_text()
-    head, *blocks = re.split(r"(?m)^(?=\[\[work\]\]\s*$)", text)
-    kept, removed = [head], []
-    for block in blocks:
-        name = tomllib.loads(block)["work"][0].get("file")
-        (removed if name in names else kept).append(name if name in names else block)
-    if removed:
-        tmp = catalog.with_name(".catalog.toml.tmp")
-        tmp.write_text("".join(kept))
-        os.replace(tmp, catalog)
-    return removed
-
-
-def update_catalog_entries(catalog, updates):
-    """Add fields to existing [[work]] blocks: updates is {file: {key: value}}.
-    Keys a block already has are left alone. Returns the files updated."""
-    text = catalog.read_text()
-    head, *blocks = re.split(r"(?m)^(?=\[\[work\]\]\s*$)", text)
-    out, done = [head], []
-    for block in blocks:
-        entry = tomllib.loads(block)["work"][0]
-        new = {k: v for k, v in updates.get(entry.get("file"), {}).items() if k not in entry}
-        if new:
-            body, gap = block.rstrip("\n"), block[len(block.rstrip("\n")):]
-            block = body + "\n" + "\n".join(f"{k} = {toml_str(str(v))}" for k, v in new.items()) + (gap or "\n")
-            done.append(entry["file"])
-        out.append(block)
-    if done:
-        tmp = catalog.with_name(".catalog.toml.tmp")
-        tmp.write_text("".join(out))
-        os.replace(tmp, catalog)
-    return done
-
-
-def append_catalog(catalog, entry):
-    """Append atomically so Syncthing never ships a half-written catalog."""
-    text = catalog.read_text() if catalog.exists() else ""
-    tmp = catalog.with_name(".catalog.toml.tmp")
-    tmp.write_text(text.rstrip("\n") + "\n" + entry)
-    os.replace(tmp, catalog)
 
 
 # --- chapter folders ---------------------------------------------------------
@@ -575,13 +516,15 @@ class Duplicate(Exception):
     """The PDF is already in the library: args are (existing file, reason)."""
 
 
-def ingest(pdf, shelf, catalog, works, hashes, log, is_book=False):
+def ingest(pdf, shelf, cat_path, works, hashes, log, is_book=False):
     """Process one PDF; returns its new file name in pdfs/ (the shelf).
     Raises Duplicate when it is already catalogued."""
     log(f"ingesting {pdf.relative_to(shelf.parent)}")
     settle(pdf)
+    marker = keep_marker(pdf)
+    keep = marker.exists()  # `books review`: keep this one despite a duplicate
     digest = dupes.sha256(pdf)
-    if digest in hashes:
+    if digest in hashes and not keep:
         raise Duplicate(hashes[digest], "identical file")
     ocr_if_needed(pdf, log)
     front, pages = front_matter(pdf), page_count(pdf)
@@ -605,13 +548,14 @@ def ingest(pdf, shelf, catalog, works, hashes, log, is_book=False):
     work["review"] = known is None
     if not work.get("authors"):
         work["authors"] = []
-    match = dupes.find_match(work, works)
+    match = None if keep else dupes.find_match(work, works)
     if match:
         raise Duplicate(*match)
 
     name = file_name(work, shelf)
     shutil.move(pdf, shelf / name)
-    append_catalog(catalog, catalog_entry(name, work))
+    catalog.append(catalog.entry_text(name, work), cat_path)
+    marker.unlink(missing_ok=True)
     hashes[digest] = name
     log(f"  -> {name}  [{', '.join(work['tags'])}]" + ("  (review)" if work["review"] else ""))
     return name
@@ -657,11 +601,22 @@ def pending(lib, shelf, catalogued, log):
     return [(p, p in merged) for p in inbox + loose + unshelved]
 
 
-def park(pdf, lib, where):
+def keep_marker(pdf):
+    """`<name>.keep-duplicate` beside an inbox PDF: skip the duplicate check."""
+    return pdf.with_name(pdf.name + KEEP_SUFFIX)
+
+
+KEEP_SUFFIX = ".keep-duplicate"
+WHY_SUFFIX = ".why"
+
+
+def park(pdf, lib, where, why):
+    """Move a PDF to inbox/<where>/ with a `<name>.why` note for `books review`."""
     dest = lib / "inbox" / where
     dest.mkdir(parents=True, exist_ok=True)
     if pdf.exists():
         shutil.move(pdf, dest / pdf.name)
+        (dest / (pdf.name + WHY_SUFFIX)).write_text(why + "\n")
 
 
 MAX_PASSES = 20
@@ -687,13 +642,13 @@ def process(log=lambda s: print(s, flush=True)):
             except Duplicate as dup:
                 existing, reason = dup.args
                 log(f"  duplicate of {existing} ({reason}); parked in inbox/duplicates/")
-                park(pdf, lib, "duplicates")
+                park(pdf, lib, "duplicates", f"{existing}\t{reason}")
             except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as err:
                 # One bad PDF must not stop the rest: park it in inbox/failed/.
                 log(f"  failed on {pdf.name}: {err}")
-                park(pdf, lib, "failed")
+                park(pdf, lib, "failed", f"{type(err).__name__}: {err}")
     for other in (lib / "inbox").glob("*") if (lib / "inbox").is_dir() else []:
-        if other.is_file() and other.suffix.lower() != ".pdf":
+        if other.is_file() and other.suffix.lower() != ".pdf" and not other.name.endswith(KEEP_SUFFIX):
             log(f"skipping non-PDF in inbox: {other.name}")
     return done
 
@@ -719,4 +674,4 @@ def backfill_ids(works, log=lambda s: print(s, flush=True)):
             if ids:
                 updates[file] = ids
                 log(f"  {file}: {', '.join(f'{k} {v}' for k, v in ids.items())}")
-    return update_catalog_entries(config.catalog_path(), updates) if updates else []
+    return catalog.update_entries(updates) if updates else []
