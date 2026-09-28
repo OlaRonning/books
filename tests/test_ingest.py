@@ -247,3 +247,13 @@ def test_process_picks_up_files_that_arrive_mid_run(tmp_path, monkeypatch):
     monkeypatch.setattr(ingest, "ingest", lambda pdf, *a, **k: seen.append(pdf.name) or pdf.name)
     assert ingest.process(log=lambda _: None) == ["a.pdf", "b.pdf"]
     assert seen == ["a.pdf", "b.pdf"]
+
+
+def test_verified_tolerates_footnote_markers():
+    # arXiv 2306.07225 prints "Zhaozhong Chen1 , Harel Biggie2"; it was wrongly rejected.
+    front = ["Kalman Filter Auto-tuning through Enforcing\nChi-Squared Normalized Error Distributions\n"
+             "with Bayesian Optimization\nZhaozhong Chen1 , Harel Biggie2 , Nisar Ahmed3", ""]
+    work = {"title": "Kalman Filter Auto-tuning through Enforcing Chi-Squared Normalized Error "
+                     "Distributions with Bayesian Optimization", "authors": ["Zhaozhong Chen"]}
+    assert ingest.verified(work, front, is_book=False)
+    assert not ingest.verified({**work, "authors": ["Ann Chenoweth"]}, front, is_book=False)

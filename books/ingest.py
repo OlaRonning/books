@@ -264,12 +264,17 @@ def verified(work, front, is_book):
     """Does a lookup result describe this PDF? Its main title (and, if known,
     first author) must appear on the opening pages: page 1-2 for a paper,
     so a DOI from its reference list cannot pass, and page 1-5 for a book."""
-    opening = set(normalize(" ".join(front[:5 if is_book else 2])).split())
+    opening = normalize(" ".join(front[:5 if is_book else 2]))
+
+    def present(word):
+        # PDFs glue affiliation/footnote markers to words: "Chen1", "Optimization2".
+        return re.search(rf"(?<![a-z0-9]){re.escape(word)}\d*(?![a-z0-9])", opening) is not None
+
     words = [w for w in normalize(work.get("title", "").split(":")[0]).split() if len(w) > 2]
-    if not words or sum(w in opening for w in words) / len(words) < 0.8:
+    if not words or sum(map(present, words)) / len(words) < 0.8:
         return False
     author = dupes.first_author(work)
-    return not author or all(part in opening for part in author.split())
+    return not author or all(map(present, author.split()))
 
 
 def lookup(ids, pages, front, log, is_book=False):
