@@ -50,9 +50,15 @@ def extract(pdf):
     return pages
 
 
+# Catalog fields the index stores (page metadata, work labels and filters).
+INDEXED_FIELDS = ("authors", "title", "tags", "type", "year")
+
+
 def entry_hash(work):
-    """Fingerprint of a catalog entry; a page's metadata is stale when it changes."""
-    return hashlib.sha256(json.dumps(work, sort_keys=True).encode()).hexdigest()
+    """Fingerprint of the indexed part of a catalog entry: pages are re-extracted
+    when it changes, not when e.g. an identifier or a note is added."""
+    indexed = {k: work.get(k) for k in INDEXED_FIELDS}
+    return hashlib.sha256(json.dumps(indexed, sort_keys=True).encode()).hexdigest()
 
 
 def work_rows(works):

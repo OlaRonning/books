@@ -11,6 +11,8 @@
                              indexes them
   books process              ingest the inbox, then index (hub only)
   books redo FILE...         re-identify catalogued PDFs from scratch (hub only)
+  books dupes [--backfill]   list suspected duplicates; --backfill first adds
+                             verified DOI/arXiv/ISBN fields to entries (hub only)
   books index [--full]       (re)build the index (hub only)
 
 The library is BOOKS_DIR (default ~/books); BOOKS_HUB names the one machine
@@ -26,7 +28,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from . import config, index
+from . import catalog, config, index
 from .viewer import pick_and_open
 
 
@@ -68,6 +70,27 @@ def redo(names):
             shutil.move(config.pdfs_path() / name, config.inbox_path() / name)
             print(f"re-queued {name}")
     process()
+
+
+def find_dupes(backfill):
+    from . import dupes, ingest
+
+    if backfill:
+        with hub_lock():
+            added = ingest.backfill_ids(catalog.load())
+            print(f"identifiers added to {len(added)} entries")
+            index.build()
+    works = catalog.load()
+    shelf = config.pdfs_path()
+    hashes = {f: dupes.sha256(shelf / f) for f in works if (shelf / f).exists()}
+    pairs = dupes.report(works, hashes)
+    for a, b, reason in pairs:
+        print(f"{reason}:\n  {a}\n  {b}")
+    parked = sorted((config.inbox_path() / "duplicates").glob("*.pdf"))
+    if parked:
+        print(f"parked in inbox/duplicates/: {', '.join(p.name for p in parked)}")
+    if not (pairs or parked):
+        print(f"no duplicates among {len(works)} works")
 
 
 def add(paths, move):
@@ -130,6 +153,12 @@ def main(argv=None):
         return
     if cmd == "process":
         process()
+        return
+    if cmd == "dupes":
+        p = argparse.ArgumentParser(prog="books dupes")
+        p.add_argument("--backfill", action="store_true",
+                       help="first add verified identifiers to catalog entries (hub only)")
+        find_dupes(p.parse_args(argv[1:]).backfill)
         return
     if cmd == "redo":
         p = argparse.ArgumentParser(prog="books redo")

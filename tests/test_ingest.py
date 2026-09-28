@@ -57,9 +57,67 @@ def test_find_ids():
     arXiv:2406.15742v1 [cs.PL]
     ISBN-10: 0-387-30303-0  ISBN-13: 978-0387-30303-1"""
     ids = ingest.find_ids(text, "paper.pdf")
-    assert ids == {"arxiv": "2406.15742", "doi": "10.1145/3776729",
+    assert ids == {"arxiv": ["2406.15742"], "doi": ["10.1145/3776729"],
                    "isbn": ["0387303030", "9780387303031"]}
-    assert ingest.find_ids("", "2406.15742v1.pdf") == {"arxiv": "2406.15742"}
+    assert ingest.find_ids("", "2406.15742v1.pdf") == {"arxiv": ["2406.15742"]}
+
+
+def test_find_ids_keeps_page_order_and_caps_candidates():
+    refs = "\n".join(f"[{i}] doi 10.1000/ref{i}" for i in range(9))
+    ids = ingest.find_ids("doi 10.1109/own.2019\n" + refs, "x.pdf")
+    assert ids["doi"][0] == "10.1109/own.2019"
+    assert len(ids["doi"]) == ingest.MAX_CANDIDATES
+
+
+MH_ISAM2 = ["MH-iSAM2: Multi-hypothesis iSAM using Bayes Tree and Hypo-tree\nMing Hsiao and Michael Kaess",
+            "I. INTRODUCTION Simultaneous localization and mapping ..."]
+
+
+def test_verified_rejects_a_reference_list_doi():
+    # Hsiao19icra.pdf once resolved to a DOI from its own reference list.
+    davis = {"title": "A column approximate minimum degree ordering algorithm",
+             "authors": ["Timothy A. Davis", "John R. Gilbert"]}
+    mh = {"title": "MH-iSAM2: Multi-hypothesis iSAM using Bayes Tree and Hypo-tree",
+          "authors": ["Ming Hsiao", "Michael Kaess"]}
+    assert not ingest.verified(davis, MH_ISAM2, is_book=False)
+    assert ingest.verified(mh, MH_ISAM2, is_book=False)
+
+
+def test_best_crossref_match_needs_title_and_author():
+    items = [
+        {"title": ["Pose graph optimization in the complex domain"], "author": [{"family": "Someone"}],
+         "type": "journal-article", "DOI": "10.1/wrong-author"},
+        {"title": ["Pose Graph Optimization in the Complex Domain"],
+         "subtitle": ["Duality, Optimal Solutions, and Verification"],
+         "author": [{"given": "Luca", "family": "Carlone"}], "type": "journal-article",
+         "DOI": "10.1109/TRO.2016.2544304", "issued": {"date-parts": [[2016]]}},
+    ]
+    title = "Pose Graph Optimization in the Complex Domain: Duality, Optimal Solutions, and Verification"
+    hit = ingest.best_crossref_match(items, title, "Carlone")
+    assert hit and hit["doi"] == "10.1109/TRO.2016.2544304" and hit["year"] == 2016
+    assert ingest.best_crossref_match(items, "Something Else Entirely", "Carlone") is None
+
+
+def test_update_catalog_entries_adds_missing_fields_only(tmp_path):
+    cat = tmp_path / "catalog.toml"
+    cat.write_text('# head\n\n[[work]]\nfile = "a.pdf"\ntitle = "A"\ndoi = "10.1/keep"\n\n'
+                   '[[work]]\nfile = "b.pdf"\ntitle = "B"\n')
+    done = ingest.update_catalog_entries(cat, {"a.pdf": {"doi": "10.1/other", "arxiv": "1234.5678"},
+                                               "b.pdf": {"isbn": "9780387303031"}})
+    works = {w["file"]: w for w in tomllib.loads(cat.read_text())["work"]}
+    assert sorted(done) == ["a.pdf", "b.pdf"]
+    assert works["a.pdf"]["doi"] == "10.1/keep" and works["a.pdf"]["arxiv"] == "1234.5678"
+    assert works["b.pdf"]["isbn"] == "9780387303031"
+    assert cat.read_text().startswith("# head")
+
+
+def test_parked_folders_are_never_merged(tmp_path):
+    lib, shelf = tmp_path, tmp_path / "pdfs"
+    for parked in ("duplicates", "failed"):
+        (lib / "inbox" / parked).mkdir(parents=True)
+        (lib / "inbox" / parked / "x.pdf").touch()
+    assert ingest.pending(lib, shelf, set(), log=lambda _: None) == []
+    assert (lib / "inbox" / "duplicates" / "x.pdf").exists()
 
 
 def test_chapter_order():
@@ -105,7 +163,7 @@ def test_pending_classifies_library_contents(tmp_path):
     (shelf / "unnamed.pdf").touch()                   # on the shelf, not catalogued
     catalogued = {"Known - Old Layout (2000).pdf", "Known - Shelved (2001).pdf"}
 
-    todo = ingest.pending(lib, shelf, catalogued, log=lambda s: None)
+    todo = ingest.pending(lib, shelf, catalogued, log=lambda _: None)
 
     assert sorted(p.relative_to(lib).as_posix() for p, _ in todo) == [
         "dropped.pdf", "inbox/new.pdf", "pdfs/unnamed.pdf"]
@@ -161,3 +219,16 @@ def test_remove_catalog_entries(tmp_path):
 ])
 def test_pick_year(work, imprint, year):
     assert ingest.pick_year(work, imprint) == year
+
+
+def test_search_hit_must_describe_the_pdf(monkeypatch):
+    # A wrong catalog title ("Davis et al.") must not confirm itself via search.
+    davis = {"title": "A column approximate minimum degree ordering algorithm",
+             "authors": ["Timothy A. Davis"], "doi": "10.1145/1024074.1024079"}
+    monkeypatch.setattr(ingest, "search_crossref", lambda title, author: dict(davis))
+    assert ingest.search_verified(davis, MH_ISAM2, False, log=lambda _: None) is None
+    mh = {"title": "MH-iSAM2: Multi-hypothesis iSAM using Bayes Tree and Hypo-tree",
+          "authors": ["Ming Hsiao", "Michael Kaess"], "doi": "10.1109/ICRA.2019.8793854"}
+    monkeypatch.setattr(ingest, "search_crossref", lambda title, author: dict(mh))
+    hit = ingest.search_verified(mh, MH_ISAM2, False, log=lambda _: None)
+    assert hit is not None and hit["doi"] == mh["doi"]

@@ -10,8 +10,13 @@ library.
   edition, venue and tags. Filter searches by tag or type.
 - **Ingest** new PDFs automatically: merge chapter folders into one PDF with
   bookmarks, OCR scans, identify the work (DOI via Crossref, arXiv, ISBN via
-  Open Library; Claude as fallback and for tags), rename it
-  `Author - Title (Year).pdf`, and catalogue and index it.
+  Open Library, else a Crossref title search; Claude as fallback and for
+  tags), rename it `Author - Title (Year).pdf`, and catalogue and index it.
+  Every lookup result is checked against the PDF's opening pages before it is
+  trusted, so a DOI from a paper's reference list cannot misname it.
+- **Duplicates** are caught on ingest (identical file, shared DOI/arXiv/ISBN,
+  or same first author and near-identical title) and parked in
+  `inbox/duplicates/`; nothing is deleted or replaced automatically.
 - **Multi-machine**: one hub writes; other machines read a synced copy of the
   library (e.g. with Syncthing) and queue new PDFs with `books add`.
 
@@ -25,6 +30,23 @@ library.
 
 The library is never part of this repository.
 
+### catalog.toml
+
+    [[work]]
+    file = "Nocedal & Wright - Numerical Optimization (2006, 2nd ed).pdf"  # in pdfs/
+    type = "book"                  # book | article | notes
+    authors = ["Jorge Nocedal", "Stephen Wright"]
+    editors = true                 # optional: authors are editors
+    title = "Numerical Optimization"
+    year = 2006                    # of the copy held
+    edition = "2nd"                # optional
+    venue = "..."                  # optional, articles
+    doi = "..."                    # optional identifiers, set only when a lookup
+    arxiv = "..."                  #   was verified against the PDF; used for
+    isbn = "..."                   #   duplicate detection
+    tags = ["optimization"]
+    review = true                  # set when identified without a lookup
+
 ## Usage
 
     books QUERY...               search pages; pick a hit to open it
@@ -34,6 +56,8 @@ The library is never part of this repository.
     books add FILE|FOLDER...     queue for ingest
     books process                ingest the inbox and index (hub)
     books redo FILE...           re-identify catalogued PDFs (hub)
+    books dupes [--backfill]     list suspected duplicates; --backfill first adds
+                                 verified identifiers to existing entries (hub)
     books index [--full]         rebuild the index (hub)
 
 rofi: `rofi -modi books:books-rofi -show books`. Typing filters the catalog;

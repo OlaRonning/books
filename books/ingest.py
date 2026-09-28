@@ -28,10 +28,10 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from . import catalog, config
+from . import catalog, config, dupes
+from .dupes import normalize, surname
 
 UA = {"User-Agent": "books-ingest/1.0 (personal PDF library)"}
-PARTICLES = {"van", "von", "der", "den", "de", "da", "di", "du", "la", "le", "del"}
 BOOK_PAGES = 150  # longer than this: treat as a book, prefer ISBN over DOI
 BOOK_TYPES = ("book", "monograph", "edited-book", "reference-book")
 ARTICLE_TYPES = ("journal-article", "proceedings-article", "posted-content", "report")
@@ -113,21 +113,25 @@ def ocr_if_needed(pdf, log):
 
 # --- identifiers and lookups -----------------------------------------------
 
+MAX_CANDIDATES = 5  # per kind; later DOIs on a short paper are its references
+
+
 def find_ids(text, filename):
+    """Candidate identifiers in page order, {kind: [value, ...]}. Candidates
+    only: every lookup result is checked against the document (verified())."""
+    arxiv = re.findall(r"arXiv:\s*(\d{4}\.\d{4,5})", text)
+    m = re.match(r"(\d{4}\.\d{4,5})(v\d+)?\.pdf$", filename)
+    if m:
+        arxiv.insert(0, m.group(1))
+    doi = [d.rstrip(".,;)") for d in re.findall(r"\b(10\.\d{4,9}/[^\s\"<>]+)", text)]
+    isbn = [d for d in (re.sub(r"[^\dXx]", "", c).upper()
+                        for c in re.findall(r"ISBN(?:-1[03])?:?\s*([\d\- ]{10,17}[\dXx])", text))
+            if valid_isbn(d)]
     ids = {}
-    m = re.search(r"arXiv:\s*(\d{4}\.\d{4,5})", text) or re.match(r"(\d{4}\.\d{4,5})(v\d+)?\.pdf$", filename)
-    if m:
-        ids["arxiv"] = m.group(1)
-    m = re.search(r"\b(10\.\d{4,9}/[^\s\"<>]+)", text)
-    if m:
-        ids["doi"] = m.group(1).rstrip(".,;)")
-    isbns = []
-    for cand in re.findall(r"ISBN(?:-1[03])?:?\s*([\d\- ]{10,17}[\dXx])", text):
-        digits = re.sub(r"[^\dXx]", "", cand).upper()
-        if valid_isbn(digits) and digits not in isbns:
-            isbns.append(digits)
-    if isbns:
-        ids["isbn"] = isbns
+    for key, values in (("arxiv", arxiv), ("doi", doi), ("isbn", isbn)):
+        unique = list(dict.fromkeys(values))[:MAX_CANDIDATES]
+        if unique:
+            ids[key] = unique
     return ids
 
 
@@ -158,20 +162,26 @@ def lookup_arxiv(aid):
         "authors": [a.findtext("a:name", "", ns) for a in entry.findall("a:author", ns)],
         "year": int(published[:4]) if published[:4].isdigit() else None,
         "venue": f"arXiv:{aid}",
+        "arxiv": aid,
     } if title else None
 
 
 def lookup_crossref(doi):
-    msg = json.loads(fetch("https://api.crossref.org/works/" + urllib.parse.quote(doi)))["message"]
+    return crossref_work(json.loads(fetch("https://api.crossref.org/works/" + urllib.parse.quote(doi)))["message"])
+
+
+def crossref_work(msg):
+    """A catalog work from a Crossref record (a chapter becomes its book)."""
     people = msg.get("author") or msg.get("editor") or []
     parts = (msg.get("issued") or msg.get("published") or {}).get("date-parts", [[None]])[0]
     kind = msg.get("type", "")
     container = (msg.get("container-title") or [""])[0]
     if kind not in ARTICLE_TYPES and kind not in BOOK_TYPES and container:
         # A chapter (Cambridge tags these "other"): catalogue the book instead.
-        book = lookup_isbn(msg.get("ISBN", [])) if msg.get("ISBN") else None
-        if book:
-            return book
+        for isbn in msg.get("ISBN", []):
+            book = lookup_isbn(re.sub(r"[^\dXx]", "", isbn))
+            if book:
+                return book
         editors = msg.get("editor") or []
         return {"type": "book", "title": container, "year": parts[0],
                 "authors": [" ".join(filter(None, [p.get("given"), p.get("family")]))
@@ -183,6 +193,7 @@ def lookup_crossref(doi):
         "authors": [" ".join(filter(None, [p.get("given"), p.get("family")])) for p in people],
         "year": parts[0],
         "crossref_type": kind,
+        "doi": msg.get("DOI"),
     }
     if not msg.get("author") and msg.get("editor"):
         work["editors"] = True
@@ -193,44 +204,99 @@ def lookup_crossref(doi):
     return work if work["title"] else None
 
 
-def lookup_isbn(isbns):
-    for isbn in isbns:
-        docs = json.loads(fetch(
-            f"https://openlibrary.org/search.json?isbn={isbn}"
-            "&fields=title,subtitle,author_name,first_publish_year"))["docs"]
-        if docs and docs[0].get("title") and docs[0].get("author_name"):
-            d = docs[0]
-            return {
-                "type": "book",
-                "title": ": ".join(filter(None, [d["title"], d.get("subtitle")])),
-                "authors": d["author_name"],
-                "year": d.get("first_publish_year"),
-            }
+def lookup_isbn(isbn):
+    docs = json.loads(fetch(
+        f"https://openlibrary.org/search.json?isbn={isbn}"
+        "&fields=title,subtitle,author_name,first_publish_year"))["docs"]
+    if not (docs and docs[0].get("title") and docs[0].get("author_name")):
+        return None
+    d = docs[0]
+    return {
+        "type": "book",
+        "title": ": ".join(filter(None, [d["title"], d.get("subtitle")])),
+        "authors": d["author_name"],
+        "year": d.get("first_publish_year"),
+        "isbn": dupes.isbn13(isbn.lower()),
+    }
+
+
+def search_crossref(title, author):
+    """Crossref bibliographic search, for works whose PDF carries no identifier."""
+    q = urllib.parse.urlencode({"query.bibliographic": title, "query.author": author, "rows": 5})
+    items = json.loads(fetch(f"https://api.crossref.org/works?{q}"))["message"]["items"]
+    return best_crossref_match(items, title, author)
+
+
+def best_crossref_match(items, title, author):
+    """The first search hit with a near-identical title and the same first author."""
+    for msg in items:
+        main = (msg.get("title") or [""])[0]
+        full = ": ".join(filter(None, [main, (msg.get("subtitle") or [""])[0]]))
+        names = {normalize(p.get("family", "")) for p in (msg.get("author") or msg.get("editor") or [])}
+        close = max(dupes.title_similarity(main, title), dupes.title_similarity(full, title))
+        if close >= SEARCH_SIMILARITY and normalize(author) in names:
+            return crossref_work(msg)
     return None
 
 
-def lookup(ids, pages, log, is_book=False):
-    """Try identifiers in the order that best fits the document's length."""
+SEARCH_SIMILARITY = 0.92
+
+
+def search_verified(work, front, is_book, log):
+    """Crossref search by title and first author, accepted only if the hit
+    also describes this PDF (a wrong catalog title must not confirm itself)."""
+    try:
+        hit = search_crossref(work["title"], surname(work["authors"][0]))
+    except (OSError, ValueError, KeyError) as err:
+        log(f"  crossref search failed: {err}")
+        return None
+    if not hit:
+        return None
+    if not verified(hit, front, is_book):
+        log(f"  crossref search found \"{hit['title'][:60]}\", not this PDF; skipping")
+        return None
+    hit.pop("crossref_type", None)
+    log(f"  identified via crossref search: doi {hit.get('doi')}")
+    return hit
+
+
+def verified(work, front, is_book):
+    """Does a lookup result describe this PDF? Its main title (and, if known,
+    first author) must appear on the opening pages: page 1-2 for a paper,
+    so a DOI from its reference list cannot pass, and page 1-5 for a book."""
+    opening = set(normalize(" ".join(front[:5 if is_book else 2])).split())
+    words = [w for w in normalize(work.get("title", "").split(":")[0]).split() if len(w) > 2]
+    if not words or sum(w in opening for w in words) / len(words) < 0.8:
+        return False
+    author = dupes.first_author(work)
+    return not author or all(part in opening for part in author.split())
+
+
+def lookup(ids, pages, front, log, is_book=False):
+    """The first identifier (in an order that suits the document's length)
+    whose record verifiably describes this PDF."""
     is_book = is_book or pages > BOOK_PAGES
     order = ["isbn", "doi", "arxiv"] if is_book else ["arxiv", "doi", "isbn"]
     fns = {"arxiv": lookup_arxiv, "doi": lookup_crossref, "isbn": lookup_isbn}
     for key in order:
-        if key not in ids:
-            continue
-        try:
-            work = fns[key](ids[key])
-        except (OSError, ValueError, KeyError, ET.ParseError) as err:
-            # network (URLError is an OSError), JSON/XML parse, missing fields:
-            # fall through to the next identifier
-            log(f"  {key} lookup failed: {err}")
-            continue
-        # A long PDF whose DOI is a chapter/article DOI is not that article.
-        if work and key == "doi" and is_book and work["type"] != "book":
-            log(f"  ignoring DOI {ids[key]} ({work.get('crossref_type')}) for a {pages}-page PDF")
-            continue
-        if work and work.get("title") and work.get("authors"):
+        for value in ids.get(key, []):
+            try:
+                work = fns[key](value)
+            except (OSError, ValueError, KeyError, ET.ParseError) as err:
+                # network (URLError is an OSError), JSON/XML parse, missing fields
+                log(f"  {key} {value} lookup failed: {err}")
+                continue
+            if not (work and work.get("title") and work.get("authors")):
+                continue
+            # A long PDF whose DOI is a chapter/article DOI is not that article.
+            if key == "doi" and is_book and work["type"] != "book":
+                log(f"  ignoring DOI {value} ({work.get('crossref_type')}) for a {pages}-page PDF")
+                continue
+            if not verified(work, front, is_book):
+                log(f"  {key} {value} is \"{work['title'][:60]}\", not this PDF; skipping")
+                continue
             work.pop("crossref_type", None)
-            log(f"  identified via {key} {ids[key]}")
+            log(f"  identified via {key} {value}")
             return work
     return None
 
@@ -287,16 +353,6 @@ def ask_claude(text, filename, pages, vocab, known, log):
 
 # --- naming and catalog ----------------------------------------------------
 
-def surname(name):
-    if "," in name:
-        return name.split(",")[0].strip()
-    toks = name.split()
-    for i, t in enumerate(toks[1:], 1):
-        if t.lower() in PARTICLES:
-            return " ".join(toks[i:])
-    return toks[-1] if toks else "Unknown"
-
-
 def short_authors(work):
     names = [surname(a) for a in work.get("authors", [])]
     if not names:
@@ -344,9 +400,9 @@ def catalog_entry(file, work):
     lines.append(f"title = {toml_str(work['title'])}")
     if work.get("year"):
         lines.append(f"year = {int(work['year'])}")
-    for key in ("edition", "venue"):
+    for key in ("edition", "venue", *dupes.ID_KEYS):
         if work.get(key):
-            lines.append(f"{key} = {toml_str(work[key])}")
+            lines.append(f"{key} = {toml_str(str(work[key]))}")
     lines.append("tags = [" + ", ".join(toml_str(t) for t in work.get("tags", [])) + "]")
     if work.get("review"):
         lines.append("review = true  # identified without a lookup; check me")
@@ -366,6 +422,27 @@ def remove_catalog_entries(catalog, names):
         tmp.write_text("".join(kept))
         os.replace(tmp, catalog)
     return removed
+
+
+def update_catalog_entries(catalog, updates):
+    """Add fields to existing [[work]] blocks: updates is {file: {key: value}}.
+    Keys a block already has are left alone. Returns the files updated."""
+    text = catalog.read_text()
+    head, *blocks = re.split(r"(?m)^(?=\[\[work\]\]\s*$)", text)
+    out, done = [head], []
+    for block in blocks:
+        entry = tomllib.loads(block)["work"][0]
+        new = {k: v for k, v in updates.get(entry.get("file"), {}).items() if k not in entry}
+        if new:
+            body, gap = block.rstrip("\n"), block[len(block.rstrip("\n")):]
+            block = body + "\n" + "\n".join(f"{k} = {toml_str(str(v))}" for k, v in new.items()) + (gap or "\n")
+            done.append(entry["file"])
+        out.append(block)
+    if done:
+        tmp = catalog.with_name(".catalog.toml.tmp")
+        tmp.write_text("".join(out))
+        os.replace(tmp, catalog)
+    return done
 
 
 def append_catalog(catalog, entry):
@@ -482,18 +559,29 @@ def settle(pdf, seconds=10):
         time.sleep(max(1, seconds - age))
 
 
-def ingest(pdf, shelf, catalog, vocab, log, is_book=False):
-    """Process one PDF; returns its new file name in pdfs/ (the shelf)."""
+class Duplicate(Exception):
+    """The PDF is already in the library: args are (existing file, reason)."""
+
+
+def ingest(pdf, shelf, catalog, works, hashes, log, is_book=False):
+    """Process one PDF; returns its new file name in pdfs/ (the shelf).
+    Raises Duplicate when it is already catalogued."""
     log(f"ingesting {pdf.relative_to(shelf.parent)}")
     settle(pdf)
+    digest = dupes.sha256(pdf)
+    if digest in hashes:
+        raise Duplicate(hashes[digest], "identical file")
     ocr_if_needed(pdf, log)
     front, pages = front_matter(pdf), page_count(pdf)
     text = claude_text(front)
+    vocab = {t for w in works.values() for t in w.get("tags", [])}
 
-    known = lookup(find_ids("\n".join(front), pdf.name), pages, log, is_book)
+    known = lookup(find_ids("\n".join(front), pdf.name), pages, front, log, is_book)
     if is_book and known is None:
         text = f"(This PDF was merged from a folder of chapter files.)\n{text}"
     meta = ask_claude(text, pdf.name, pages, vocab, known, log) or {}
+    if known is None and meta.get("title") and meta.get("authors"):
+        known = search_verified(meta, front, is_book or pages > BOOK_PAGES, log)
     work = dict(meta)
     if known:  # identifier metadata wins for the bibliographic fields
         work.update({k: v for k, v in known.items() if v})
@@ -505,16 +593,21 @@ def ingest(pdf, shelf, catalog, vocab, log, is_book=False):
     work["review"] = known is None
     if not work.get("authors"):
         work["authors"] = []
+    match = dupes.find_match(work, works)
+    if match:
+        raise Duplicate(*match)
 
     name = file_name(work, shelf)
     shutil.move(pdf, shelf / name)
     append_catalog(catalog, catalog_entry(name, work))
+    hashes[digest] = name
     log(f"  -> {name}  [{', '.join(work['tags'])}]" + ("  (review)" if work["review"] else ""))
     return name
 
 
-# Library subdirectories that are never chapter folders.
+# Library and inbox subdirectories that are never chapter folders.
 RESERVED = {"inbox", "notes", "pdfs"}
+PARKED = {"failed", "duplicates"}
 
 
 def pending(lib, shelf, catalogued, log):
@@ -524,7 +617,7 @@ def pending(lib, shelf, catalogued, log):
     shelf."""
     box = lib / "inbox"
     merged = set()
-    folders = [d for d in box.glob("*") if d.is_dir() and d.name != "failed"] if box.is_dir() else []
+    folders = [d for d in box.glob("*") if d.is_dir() and d.name not in PARKED] if box.is_dir() else []
     folders += [d for d in lib.glob("*") if d.is_dir() and d.name not in RESERVED
                 and not d.name.startswith(".")]
     for folder in sorted(folders):
@@ -552,22 +645,54 @@ def pending(lib, shelf, catalogued, log):
     return [(p, p in merged) for p in inbox + loose + unshelved]
 
 
+def park(pdf, lib, where):
+    dest = lib / "inbox" / where
+    dest.mkdir(parents=True, exist_ok=True)
+    if pdf.exists():
+        shutil.move(pdf, dest / pdf.name)
+
+
 def process(log=lambda s: print(s, flush=True)):
     lib, shelf, cat = config.LIBRARY, config.pdfs_path(), config.catalog_path()
+    todo = pending(lib, shelf, set(catalog.load()), log)
+    hashes = {dupes.sha256(p): p.name for p in shelf.glob("*.pdf")} if todo else {}
     done = []
-    for pdf, is_book in pending(lib, shelf, set(catalog.load()), log):
-        vocab = {t for w in catalog.load().values() for t in w.get("tags", [])}
+    for pdf, is_book in todo:
         try:
-            done.append(ingest(pdf, shelf, cat, vocab, log, is_book))
+            done.append(ingest(pdf, shelf, cat, catalog.load(), hashes, log, is_book))
+        except Duplicate as dup:
+            existing, reason = dup.args
+            log(f"  duplicate of {existing} ({reason}); parked in inbox/duplicates/")
+            park(pdf, lib, "duplicates")
         except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as err:
             # One bad PDF must not stop the rest: park it in inbox/failed/.
             log(f"  failed on {pdf.name}: {err}")
-            failed = lib / "inbox" / "failed"
-            failed.mkdir(parents=True, exist_ok=True)
-            if pdf.exists():
-                shutil.move(pdf, failed / pdf.name)
+            park(pdf, lib, "failed")
     for other in (lib / "inbox").glob("*") if (lib / "inbox").is_dir() else []:
         if other.is_file() and other.suffix.lower() != ".pdf":
             log(f"skipping non-PDF in inbox: {other.name}")
     return done
 
+
+
+def backfill_ids(works, log=lambda s: print(s, flush=True)):
+    """Add verified DOI/arXiv/ISBN fields to catalog entries that lack them,
+    so identifier-based duplicate detection covers the whole library."""
+    shelf, updates = config.pdfs_path(), {}
+    for file, work in sorted(works.items()):
+        pdf = shelf / file
+        if any(work.get(k) for k in dupes.ID_KEYS) or not pdf.exists():
+            continue
+        front, pages = front_matter(pdf), page_count(pdf)
+        is_book = work.get("type") == "book"
+        is_book = is_book or pages > BOOK_PAGES
+        found = lookup(find_ids("\n".join(front), file), pages, front, lambda _: None, is_book)
+        if not found and work.get("authors"):
+            found = search_verified(work, front, is_book, lambda msg, f=file: log(f"  {f}:{msg}"))
+        main = work["title"].split(":")[0]
+        if found and dupes.title_similarity(found.get("title", "").split(":")[0], main) >= 0.85:
+            ids = {k: found[k] for k in dupes.ID_KEYS if found.get(k)}
+            if ids:
+                updates[file] = ids
+                log(f"  {file}: {', '.join(f'{k} {v}' for k, v in ids.items())}")
+    return update_catalog_entries(config.catalog_path(), updates) if updates else []
