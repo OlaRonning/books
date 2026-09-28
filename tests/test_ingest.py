@@ -258,3 +258,20 @@ def test_verified_tolerates_footnote_markers():
                      "Distributions with Bayesian Optimization", "authors": ["Zhaozhong Chen"]}
     assert ingest.verified(work, front, is_book=False)
     assert not ingest.verified({**work, "authors": ["Ann Chenoweth"]}, front, is_book=False)
+
+
+def test_search_hit_must_match_the_work_type(monkeypatch):
+    front = ["PROBABILISTIC ROBOTICS\nSebastian THRUN\nWolfram BURGARD\nDieter FOX", ""]
+    article = {"type": "article", "title": "Probabilistic robotics", "authors": ["Sebastian Thrun"],
+               "doi": "10.1145/504729.504754"}
+    monkeypatch.setattr(ingest, "search_crossref", lambda _title, _author: dict(article))
+    book = {"type": "book", "title": "Probabilistic Robotics", "authors": ["Sebastian Thrun"]}
+    assert ingest.search_verified(book, front, True, log=lambda _: None) is None
+
+
+def test_crossref_year_prefers_print_over_online_first():
+    msg = {"type": "journal-article", "title": ["Control functionals for Monte Carlo integration"],
+           "author": [{"given": "Chris", "family": "Oates"}], "DOI": "10.1111/rssb.12185",
+           "issued": {"date-parts": [[2016, 5]]}, "published-print": {"date-parts": [[2017, 6]]}}
+    work = ingest.crossref_work(msg)
+    assert work is not None and work["year"] == 2017

@@ -173,7 +173,9 @@ def lookup_crossref(doi):
 def crossref_work(msg):
     """A catalog work from a Crossref record (a chapter becomes its book)."""
     people = msg.get("author") or msg.get("editor") or []
-    parts = (msg.get("issued") or msg.get("published") or {}).get("date-parts", [[None]])[0]
+    # Print year is the citation year; "issued" is the earliest (often online-first).
+    dated = msg.get("published-print") or msg.get("issued") or msg.get("published") or {}
+    parts = dated.get("date-parts", [[None]])[0]
     kind = msg.get("type", "")
     container = (msg.get("container-title") or [""])[0]
     if kind not in ARTICLE_TYPES and kind not in BOOK_TYPES and container:
@@ -254,6 +256,11 @@ def search_verified(work, front, is_book, log):
         return None
     if not verified(hit, front, is_book):
         log(f"  crossref search found \"{hit['title'][:60]}\", not this PDF; skipping")
+        return None
+    expected = "book" if is_book else work.get("type")
+    if expected and hit["type"] != expected:
+        # e.g. Thrun's 2002 CACM article "Probabilistic Robotics" is not the book.
+        log(f"  crossref search found a {hit['type']} for this {expected}; skipping")
         return None
     hit.pop("crossref_type", None)
     log(f"  identified via crossref search: doi {hit.get('doi')}")
