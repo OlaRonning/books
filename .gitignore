@@ -4,6 +4,9 @@
 *.sqlite.tmp
 catalog.toml
 inbox/
+annotations/
+annotated/
+*.rmdoc
 
 # Build and tooling
 result

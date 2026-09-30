@@ -55,8 +55,10 @@
             (pkgs.python3.withPackages (p: [
               p.pytest
               p.pikepdf
+              p.rmscene
             ]))
             pkgs.poppler-utils
+            pkgs.rmapi
             pkgs.pyright
             pkgs.ruff
           ];

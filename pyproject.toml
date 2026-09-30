@@ -11,8 +11,8 @@ requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
-# Merging chapter folders on the hub.
-ingest = ["pikepdf"]
+# Hub only: merging chapter folders, reading pulled reMarkable archives.
+ingest = ["pikepdf", "rmscene"]
 
 [project.scripts]
 books = "books.cli:main"

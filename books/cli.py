@@ -16,6 +16,13 @@
   books dupes [--backfill]   list suspected duplicates; --backfill first adds
                              verified DOI/arXiv/ISBN fields to entries (hub only)
   books index [--full]       (re)build the index (hub only)
+  books push [QUERY...]      send a catalogued PDF to the reMarkable (with its
+                             annotations, if an earlier reading was pulled)
+  books pull [--keep] [QUERY...]
+                             bring a document back from the reMarkable: archive
+                             it with its annotations, render an annotated copy,
+                             extract highlights, delete it there (hub only)
+  books tablet               list the documents in the reMarkable folder
 
 The library is BOOKS_DIR (default ~/books); BOOKS_HUB names the one machine
 allowed to write it.
@@ -176,6 +183,23 @@ def main(argv=None):
         p.add_argument("paths", nargs="+", metavar="PATH")
         a = p.parse_args(argv[1:])
         add(a.paths, a.move)
+        return
+    if cmd in ("push", "pull", "tablet"):
+        from . import remarkable
+
+        p = argparse.ArgumentParser(prog=f"books {cmd}")
+        if cmd == "pull":
+            p.add_argument("--keep", action="store_true", help="leave it on the tablet too")
+        if cmd != "tablet":
+            p.add_argument("query", nargs="*", help="file name or words from the title (default: pick)")
+        a = p.parse_args(argv[1:])
+        if cmd == "push":
+            remarkable.push(a.query)
+        elif cmd == "pull":
+            with hub_lock():
+                remarkable.pull(a.query, a.keep)
+        else:
+            remarkable.list_tablet()
         return
     if cmd == "stats":
         index.stats()

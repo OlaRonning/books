@@ -31,6 +31,8 @@ library.
     ~/books/
       pdfs/                  one PDF per work: Author - Title (Year[, edition]).pdf
       inbox/                 drop PDFs or chapter folders here (or in ~/books itself)
+      annotations/           reMarkable archives of pulled readings (<name>.rmdoc)
+      annotated/             annotated copies and highlights of those readings
       catalog.toml           one [[work]] per PDF in pdfs/
       .books-index.sqlite    the search index (built on the hub)
 
@@ -67,9 +69,35 @@ The library is never part of this repository.
     books dupes [--backfill]     list suspected duplicates; --backfill first adds
                                  verified identifiers to existing entries (hub)
     books index [--full]         rebuild the index (hub)
+    books push [QUERY...]        send a PDF to the reMarkable
+    books pull [--keep] [QUERY...]
+                                 bring it back with its annotations (hub)
+    books tablet                 list what is on the reMarkable
 
 rofi: `rofi -modi books:books-rofi -show books`. Typing filters the catalog;
 Enter on unmatched text searches every page; `t:TAG words` narrows by tag.
+
+## reMarkable
+
+Reading on a reMarkable goes through its cloud, with
+[rmapi](https://github.com/ddvk/rmapi). Pair it once on each machine: run
+`rmapi` and enter the code from my.remarkable.com/device/browser/connect.
+
+- `books push QUERY` uploads the chosen PDF to `/Books` on the tablet
+  (`BOOKS_TABLET_FOLDER` changes that), named after its file. Any machine.
+- `books pull QUERY` brings it back (hub only) and deletes it from the tablet
+  (`--keep` leaves it there). The original in `pdfs/` is never touched:
+  - `annotations/<name>.rmdoc` is the tablet's own archive of the document,
+    every stroke and highlight included. It is the lossless copy: pushing the
+    PDF again uploads this instead, so the annotations come back.
+  - `annotated/<name>.pdf` is a rendered copy with the annotations drawn in
+    (rmapi's renderer, which is basic). Search results and `books ls` open it
+    in place of the original.
+  - `annotated/<name>.md` lists the highlighted passages by PDF page.
+
+The tablet copy is only deleted once the downloaded archive checks out.
+Documents are matched to the library by name, so a document renamed on the
+tablet is left alone.
 
 ## Install (Home Manager, flakes)
 
@@ -96,7 +124,8 @@ Standalone: `nix run github:OlaRonning/books -- QUERY`.
 
 Ingest sends identifiers (DOI, arXiv id, ISBN) to Crossref, arXiv and Open
 Library, and the first pages of each new PDF (up to ~12k characters) to
-Claude. Search and indexing are local.
+Claude. Search and indexing are local. `books push` and `pull` go through
+the reMarkable cloud.
 
 ## Development
 

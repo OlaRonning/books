@@ -5,6 +5,7 @@
   fzf,
   zathura,
   ocrmypdf,
+  rmapi,
   claude-code,
   # Hub build: merge chapter folders, OCR, and ask Claude when ingesting.
   withIngest ? false,
@@ -31,11 +32,15 @@ python3Packages.buildPythonApplication {
   };
 
   build-system = [ python3Packages.setuptools ];
-  dependencies = lib.optionals withIngest [ python3Packages.pikepdf ];
+  dependencies = lib.optionals withIngest [
+    python3Packages.pikepdf
+    python3Packages.rmscene # reading highlights out of pulled reMarkable archives
+  ];
 
   nativeCheckInputs = [
     python3Packages.pytestCheckHook
     python3Packages.pikepdf
+    python3Packages.rmscene
   ];
 
   makeWrapperArgs = [
@@ -46,6 +51,7 @@ python3Packages.buildPythonApplication {
         [
           fzf
           zathura
+          rmapi
         ]
         ++ lib.optionals withIngest [
           ocrmypdf

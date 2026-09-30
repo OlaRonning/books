@@ -583,7 +583,7 @@ def ingest(pdf, shelf, cat_path, works, hashes, log, is_book=False):
 
 
 # Library and inbox subdirectories that are never chapter folders.
-RESERVED = {"inbox", "notes", "pdfs"}
+RESERVED = {"annotated", "annotations", "inbox", "notes", "pdfs"}
 PARKED = {"failed", "duplicates"}
 
 
