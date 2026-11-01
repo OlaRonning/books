@@ -45,23 +45,35 @@ python3Packages.buildPythonApplication {
 
   makeWrapperArgs = [
     # pdftotext/pdfinfo are required; the viewers are the user's if they have them.
-    "--prefix PATH : ${lib.makeBinPath [ poppler-utils ]}"
-    "--suffix PATH : ${
-      lib.makeBinPath (
-        [
-          fzf
-          zathura
-          rmapi
-        ]
-        ++ lib.optionals withIngest [
-          ocrmypdf
-          claude-code
-        ]
-      )
-    }"
+    "--prefix"
+    "PATH"
+    ":"
+    (lib.makeBinPath [ poppler-utils ])
+    "--suffix"
+    "PATH"
+    ":"
+    (lib.makeBinPath (
+      [
+        fzf
+        zathura
+        rmapi
+      ]
+      ++ lib.optionals withIngest [
+        ocrmypdf
+        claude-code
+      ]
+    ))
   ]
-  ++ lib.optional (libraryDir != null) "--set-default BOOKS_DIR ${lib.escapeShellArg libraryDir}"
-  ++ lib.optional (hubHost != null) "--set-default BOOKS_HUB ${lib.escapeShellArg hubHost}";
+  ++ lib.optionals (libraryDir != null) [
+    "--set-default"
+    "BOOKS_DIR"
+    libraryDir
+  ]
+  ++ lib.optionals (hubHost != null) [
+    "--set-default"
+    "BOOKS_HUB"
+    hubHost
+  ];
 
   meta = {
     description = "Page-level full-text search and automatic cataloguing for a PDF library";
